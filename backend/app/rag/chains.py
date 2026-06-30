@@ -8,6 +8,32 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 
 
+class LLMProviderUnavailableError(RuntimeError):
+    """
+    Raised when the user selects a provider that isn't available in this
+    deployment (missing API key, daemon not reachable, etc.).
+
+    Both Gemini and Ollama are optional — the app boots regardless. A provider
+    only needs to be configured if a user actually selects it in chat.
+    """
+
+
+def _check_ollama_reachable(base_url: str) -> None:
+    """Lightweight reachability probe for the Ollama daemon. Raises if down."""
+    import urllib.request
+    import urllib.error
+
+    try:
+        with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/tags", timeout=2) as resp:
+            resp.read()
+    except Exception as exc:
+        raise LLMProviderUnavailableError(
+            f"Ollama is not reachable at {base_url}. Start the Ollama daemon "
+            f"(e.g. `ollama serve`) and pull a model (`ollama pull mistral`). "
+            f"Original error: {exc}"
+        )
+
+
 def build_llm(provider: str = "gemini", model: str | None = None):
     """
     Build the LLM instance for the requested provider.
@@ -15,6 +41,11 @@ def build_llm(provider: str = "gemini", model: str | None = None):
     Per-request instantiation (not module-level singleton) because the
     provider can differ between concurrent users. Construction is cheap —
     no network call happens here.
+
+    Both providers are OPTIONAL: the app boots without any key/daemon. A
+    provider is only validated here, lazily, when a user actually selects it.
+    If the selected provider is unavailable, raises LLMProviderUnavailableError
+    so the chat route can surface a clear error instead of a generic 500.
 
     Args:
         provider: "gemini" (default) or "ollama".
@@ -25,19 +56,29 @@ def build_llm(provider: str = "gemini", model: str | None = None):
     if provider == "ollama":
         from langchain_ollama import ChatOllama
 
+        base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        resolved_model = model or os.getenv("OLLAMA_MODEL", "mistral")
+        # Validate lazily: only error if the user actually picked Ollama.
+        _check_ollama_reachable(base_url)
         return ChatOllama(
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-            model=model or os.getenv("OLLAMA_MODEL", "mistral"),
+            base_url=base_url,
+            model=resolved_model,
             temperature=0.1,
             streaming=True,
         )
 
-    # default: Gemini
+    # default: Gemini — validate key lazily only when Gemini is selected.
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if not gemini_key:
+        raise LLMProviderUnavailableError(
+            "Gemini is not configured. Set the GEMINI_API_KEY environment "
+            "variable, or select a different provider in chat."
+        )
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     return ChatGoogleGenerativeAI(
         model=model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-        google_api_key=os.getenv("GEMINI_API_KEY", ""),
+        google_api_key=gemini_key,
         temperature=0,
     )
 

@@ -24,7 +24,12 @@ from pypdf import PdfReader
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-from app.rag.chains import answer_question_with_llcel, build_llm, question_prefers_full_document_context
+from app.rag.chains import (
+    answer_question_with_llcel,
+    build_llm,
+    LLMProviderUnavailableError,
+    question_prefers_full_document_context,
+)
 from app.documents.extraction.docling_extractor import extract_full_document_context_from_pdf_bytes
 from app.chat_history.database import (
     add_chat_messages,
@@ -177,7 +182,7 @@ async def resolve_document_contexts_for_llm(
         return full, full
     if len(full) <= RAG_FULL_CONTEXT_THRESHOLD:
         return full, full
-    if not USE_CHROMA or not GEMINI_API_KEY or chroma_rag_module is None:
+    if not USE_CHROMA or chroma_rag_module is None:
         return full, full
 
     name = chroma_rag_module.collection_name_for(user_id, resolved_document_id, full)
@@ -1593,15 +1598,16 @@ async def chat(
             media_type="text/event-stream",
         )
 
-    if not GEMINI_API_KEY and req.provider != "ollama":
-        assistant_answer = "[Server error] GEMINI_API_KEY not configured. Set env var GEMINI_API_KEY."
+    # Both providers are optional — validate lazily, only the one the user
+    # actually selected. Surface a clear chat-level message (not a 500).
+    try:
+        llm = build_llm(provider=req.provider, model=req.model)
+    except LLMProviderUnavailableError as exc:
+        assistant_answer = f"[Provider unavailable] {exc}"
         return StreamingResponse(
             event_stream_for(assistant_answer),
             media_type="text/event-stream",
         )
-
-    try:
-        llm = build_llm(provider=req.provider, model=req.model)
     except Exception as exc:
         assistant_answer = f"[Server error] Failed to initialise LLM ({req.provider}): {exc}"
         return StreamingResponse(
