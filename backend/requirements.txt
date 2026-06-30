@@ -4,6 +4,7 @@ python-multipart
 pypdf
 PyMuPDF
 pymupdf4llm
+docling
 google-generativeai
 python-dotenv
 asyncpg

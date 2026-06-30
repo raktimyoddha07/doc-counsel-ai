@@ -1,64 +1,72 @@
+"""
+PDF → structured text extraction using Docling (IBM, MIT-licensed).
+
+Replaces the old PyMuPDFLoader-based extraction. Docling uses layout
+analysis (DocLayNet) + table structure recognition (TableFormer) for superior
+table extraction on legal documents (defined-term tables, obligation schedules,
+signature blocks).
+
+Page-level provenance from Docling elements is used to rebuild the same
+``[Page N]`` citation format the frontend and LLM chains depend on.
+"""
 import os
 import tempfile
+from collections import defaultdict
 from typing import Dict, List, Tuple
 
 from fastapi import HTTPException
-from langchain_community.document_loaders import PyMuPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
 
-
-def _coerce_page_num(meta: Dict, fallback: int) -> int:
-    # PyMuPDFLoader usually stores page as a zero-based index, but we defensively handle a few variants.
-    raw = meta.get("page")
-    if raw is None:
-        raw = meta.get("page_number")
-    if raw is None:
-        return fallback
-    try:
-        page = int(raw)
-    except (TypeError, ValueError):
-        return fallback
-    return page
+from docling.document_converter import DocumentConverter
 
 
 def _build_full_document_context(
     *,
-    chunks: List[Document],
+    elements: List[Dict],
     page_count: int,
     max_full_context_chars: int,
 ) -> str:
-    page_to_texts: Dict[int, List[str]] = {}
-    for chunk in chunks:
-        meta = chunk.metadata or {}
-        page_num = _coerce_page_num(meta, fallback=1)
-        page_to_texts.setdefault(page_num, []).append((chunk.page_content or "").strip())
+    """Reassemble extracted elements into ``[Page N]`` anchored context."""
+    pages: Dict[int, List[str]] = defaultdict(list)
+    for el in elements:
+        page = el.get("page_number", 1)
+        text = (el.get("text") or "").strip()
+        if text:
+            pages[page].append(text)
 
-    # Normalize page numbering so that the prompt always uses one-based page anchors: [Page 1], [Page 2], ...
-    shift = 1 if page_to_texts and min(page_to_texts.keys()) == 0 else 0
-
-    normalized_page_to_texts: Dict[int, List[str]] = {}
-    for raw_page_num, texts in page_to_texts.items():
-        normalized_page_to_texts[raw_page_num + shift] = texts
-
-    full_parts: List[str] = []
+    parts: List[str] = []
     for page_num in range(1, page_count + 1):
-        texts = normalized_page_to_texts.get(page_num, [])
-        # Keep prompt size bounded by allowing missing text (but keep the [Page X] anchor for citations).
-        blob = "\n\n".join([t for t in texts if t]).strip()
+        texts = pages.get(page_num, [])
+        blob = "\n\n".join(texts).strip()
         if not blob:
             blob = "(No extractable text found on this page.)"
-        full_parts.append(f"[Page {page_num}]\n{blob}".strip())
+        parts.append(f"[Page {page_num}]\n{blob}")
 
-    full_document_context = "\n\n".join(full_parts).strip()
+    full_document_context = "\n\n".join(parts).strip()
 
     if len(full_document_context) > max_full_context_chars:
         raise HTTPException(
             status_code=413,
-            detail=f"Extracted context too large ({len(full_document_context)} chars). Please upload a smaller/less dense document.",
+            detail=f"Extracted context too large ({len(full_document_context)} chars). "
+                   f"Please upload a smaller/less dense document.",
         )
-
     return full_document_context
+
+
+def extract_pdf_elements(file_path: str) -> List[Dict]:
+    """
+    Convert a PDF file into element-level dicts with page provenance.
+    """
+    converter = DocumentConverter()
+    result = converter.convert(file_path)
+    elements: List[Dict] = []
+    for item, _level in result.document.iterate_items():
+        page_no = 1
+        if item.prov and len(item.prov) > 0:
+            page_no = getattr(item.prov[0], "page_no", None) or 1
+        text = getattr(item, "text", "") or ""
+        if text.strip():
+            elements.append({"text": text.strip(), "page_number": page_no})
+    return elements
 
 
 def extract_full_document_context_from_pdf_bytes(
@@ -70,11 +78,16 @@ def extract_full_document_context_from_pdf_bytes(
     chunk_overlap: int = 100,
 ) -> Tuple[str, int]:
     """
-    Uses LangChain:
-    - `PyMuPDFLoader` to extract per-page text
-    - `RecursiveCharacterTextSplitter` to split text into context-friendly chunks
+    Extract structured text from PDF bytes using Docling.
+
+    Returns (full_document_context, page_count) where context uses the
+    ``[Page N]`` citation anchor format required by the frontend chips
+    and LLM chains.
+
+    ``chunk_size`` and ``chunk_overlap`` are accepted for signature compat
+    with the old PyMuPDF path but are unused — Docling produces element-level
+    granularity natively. Kept so ``main.py`` call sites don't break.
     """
-    # PyMuPDFLoader expects a file path; we use a temp file.
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
@@ -82,9 +95,13 @@ def extract_full_document_context_from_pdf_bytes(
             tmp.flush()
             tmp_path = tmp.name
 
-        loader = PyMuPDFLoader(tmp_path)
-        page_docs = loader.load()
-        page_count = len(page_docs)
+        elements = extract_pdf_elements(tmp_path)
+
+        # Determine page count from extracted elements.
+        if elements:
+            page_count = max(el["page_number"] for el in elements)
+        else:
+            page_count = 0
 
         if page_count > max_pages:
             raise HTTPException(
@@ -92,13 +109,11 @@ def extract_full_document_context_from_pdf_bytes(
                 detail=f"PDF page limit exceeded. Max allowed is {max_pages} pages.",
             )
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-        chunks = splitter.split_documents(page_docs)
+        if page_count == 0:
+            page_count = 1  # fallback: single empty page
+
         full_document_context = _build_full_document_context(
-            chunks=chunks,
+            elements=elements,
             page_count=page_count,
             max_full_context_chars=max_full_context_chars,
         )
@@ -108,6 +123,4 @@ def extract_full_document_context_from_pdf_bytes(
             try:
                 os.remove(tmp_path)
             except Exception:
-                # Best-effort cleanup.
                 pass
-
