@@ -24,9 +24,7 @@ from pypdf import PdfReader
 import google.generativeai as genai
 from dotenv import load_dotenv
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-from app.rag.chains import answer_question_with_llcel, question_prefers_full_document_context
+from app.rag.chains import answer_question_with_llcel, build_llm, question_prefers_full_document_context
 from app.documents.extraction.docling_extractor import extract_full_document_context_from_pdf_bytes
 from app.chat_history.database import (
     add_chat_messages,
@@ -205,6 +203,8 @@ class ChatRequest(BaseModel):
     question: str
     document_context: Optional[str] = None
     document_id: Optional[int] = None
+    provider: str = "gemini"  # "gemini" (default) or "ollama"
+    model: Optional[str] = None  # optional model name override
 
 
 class UploadResponse(BaseModel):
@@ -1593,18 +1593,21 @@ async def chat(
             media_type="text/event-stream",
         )
 
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEY and req.provider != "ollama":
         assistant_answer = "[Server error] GEMINI_API_KEY not configured. Set env var GEMINI_API_KEY."
         return StreamingResponse(
             event_stream_for(assistant_answer),
             media_type="text/event-stream",
         )
 
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        api_key=GEMINI_API_KEY,
-        temperature=0,
-    )
+    try:
+        llm = build_llm(provider=req.provider, model=req.model)
+    except Exception as exc:
+        assistant_answer = f"[Server error] Failed to initialise LLM ({req.provider}): {exc}"
+        return StreamingResponse(
+            event_stream_for(assistant_answer),
+            media_type="text/event-stream",
+        )
 
     ctx_for_llm, ctx_for_heuristics = await resolve_document_contexts_for_llm(
         user_id=user_id,

@@ -15,6 +15,7 @@ langchain-postgres
 langchain-google-genai
 langchain-chroma
 langchain-huggingface
+langchain-ollama
 sentence-transformers
 rank_bm25
 chromadb

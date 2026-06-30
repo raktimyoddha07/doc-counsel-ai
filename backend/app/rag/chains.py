@@ -1,3 +1,4 @@
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -5,6 +6,40 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
+
+
+def build_llm(provider: str = "gemini", model: str | None = None):
+    """
+    Build the LLM instance for the requested provider.
+
+    Per-request instantiation (not module-level singleton) because the
+    provider can differ between concurrent users. Construction is cheap —
+    no network call happens here.
+
+    Args:
+        provider: "gemini" (default) or "ollama".
+        model: optional model name override. Falls back to env vars, then defaults.
+    """
+    provider = (provider or "gemini").lower()
+
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            model=model or os.getenv("OLLAMA_MODEL", "mistral"),
+            temperature=0.1,
+            streaming=True,
+        )
+
+    # default: Gemini
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    return ChatGoogleGenerativeAI(
+        model=model or os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+        google_api_key=os.getenv("GEMINI_API_KEY", ""),
+        temperature=0,
+    )
 
 
 def build_auditor_system_prompt() -> str:
