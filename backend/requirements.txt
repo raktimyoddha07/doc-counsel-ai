@@ -15,5 +15,6 @@ langchain-google-genai
 langchain-chroma
 langchain-huggingface
 sentence-transformers
+rank_bm25
 chromadb
 psycopg[binary]

@@ -135,7 +135,38 @@ def retrieve_context(
         embedding_function=embeddings,
         persist_directory=persist_directory,
     )
-    results = vs.similarity_search(question, k=k)
+
+    # Hybrid retrieval (Migration 4): dense Chroma + sparse BM25 via RRF.
+    # BM25 catches exact clause/section/defined-term strings that dense
+    # embeddings blur — critical for legal-document QA. Falls back to dense
+    # only if the collection has no storable documents to build BM25 from.
+    try:
+        from .hybrid_retriever import build_hybrid_retriever
+
+        stored = vs.get(include=["documents", "metadatas"])
+        chunks: List[Document] = []
+        ids = stored.get("ids") or []
+        docs = stored.get("documents") or []
+        metas = stored.get("metadatas") or []
+        for i in range(len(ids)):
+            body = (docs[i] if i < len(docs) else "") or ""
+            meta = metas[i] if i < len(metas) else {}
+            chunks.append(Document(page_content=body, metadata=meta or {}))
+
+        if chunks:
+            dense_retriever = vs.as_retriever(search_kwargs={"k": k})
+            ensemble = build_hybrid_retriever(
+                dense_retriever=dense_retriever,
+                chunks=chunks,
+                top_k=k,
+            )
+            results = ensemble.invoke(question)
+        else:
+            results = vs.similarity_search(question, k=k)
+    except Exception:
+        # Any hybrid-path failure must not break chat — degrade to dense only.
+        results = vs.similarity_search(question, k=k)
+
     parts: List[str] = []
     seen: Set[Tuple[int, str]] = set()
     for doc in results:
