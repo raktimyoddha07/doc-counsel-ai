@@ -1,5 +1,5 @@
 """
-Chroma persistent vector store + Gemini embeddings for question-specific retrieval (RAG).
+Chroma persistent vector store + local BGE embeddings for question-specific retrieval (RAG).
 """
 from __future__ import annotations
 
@@ -42,8 +42,9 @@ def collection_name_for(
     return sanitize_collection_name(raw)
 
 
-def _embeddings(google_api_key: str, embedding_model: str):
-    return build_embeddings(google_api_key=google_api_key, embedding_model=embedding_model)
+def _embeddings():
+    # Local BGE model — see embeddings.py. No API key, content stays on-server.
+    return build_embeddings()
 
 
 def _documents_from_context(
@@ -84,8 +85,6 @@ def ingest_document(
     user_id: int,
     document_id: Optional[int],
     full_document_context: str,
-    google_api_key: str,
-    embedding_model: str = "gemini-embedding-001",
     chunk_size: int = 1200,
     chunk_overlap: int = 150,
 ) -> str:
@@ -100,7 +99,7 @@ def ingest_document(
     except Exception:
         pass
 
-    embeddings = _embeddings(google_api_key, embedding_model)
+    embeddings = _embeddings()
     docs = _documents_from_context(
         full_document_context,
         chunk_size=chunk_size,
@@ -128,11 +127,9 @@ def retrieve_context(
     persist_directory: str,
     collection_name: str,
     question: str,
-    google_api_key: str,
-    embedding_model: str = "gemini-embedding-001",
     k: int = 8,
 ) -> str:
-    embeddings = _embeddings(google_api_key, embedding_model)
+    embeddings = _embeddings()
     vs = Chroma(
         collection_name=collection_name,
         embedding_function=embeddings,

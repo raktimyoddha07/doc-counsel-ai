@@ -94,7 +94,8 @@ USE_CHROMA = os.getenv("USE_CHROMA", "true").strip().lower() in ("1", "true", "y
 CHROMA_PERSIST_DIR = os.path.abspath(
     os.getenv("CHROMA_PERSIST_DIRECTORY", os.path.join(os.path.dirname(__file__), "chroma_data"))
 )
-GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+# NOTE: Embeddings are now local BGE (see app/rag/embeddings.py). The old
+# GEMINI_EMBEDDING_MODEL env var is no longer used; configure via BGE_EMBEDDING_MODEL / BGE_DEVICE instead.
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "8"))
 RAG_FULL_CONTEXT_THRESHOLD = int(os.getenv("RAG_FULL_CONTEXT_THRESHOLD", "14000"))
 
@@ -188,8 +189,6 @@ async def resolve_document_contexts_for_llm(
             persist_directory=CHROMA_PERSIST_DIR,
             collection_name=name,
             question=question,
-            google_api_key=GEMINI_API_KEY,
-            embedding_model=GEMINI_EMBEDDING_MODEL,
             k=RAG_TOP_K,
         )
         if len(retrieved) < 80:
@@ -1410,8 +1409,6 @@ async def upload(
                 user_id=user_id,
                 document_id=stored_document_id,
                 full_document_context=full_document_context,
-                google_api_key=GEMINI_API_KEY,
-                embedding_model=GEMINI_EMBEDDING_MODEL,
             )
             chroma_indexed = True
         except Exception:
