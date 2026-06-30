@@ -1,6 +1,6 @@
-# PdfLens
+# DocCounsel AI
 
-PdfLens is a document-grounded analysis assistant for PDFs.  
+DocCounsel AI is a document-grounded analysis assistant for PDFs.  
 The app extracts structured PDF content (text, tables, images), builds page-aware context, and answers user questions with citations tied to original pages.
 
 This README is intentionally detailed so a new developer can understand the system end-to-end without opening many files first.

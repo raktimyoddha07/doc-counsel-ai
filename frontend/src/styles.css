@@ -1,3 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 7%;
+    --foreground: 210 40% 96%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 96%;
+    --primary: 199 89% 60%;
+    --primary-foreground: 222 47% 7%;
+    --secondary: 217 33% 18%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 217 33% 18%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 18%;
+    --accent-foreground: 210 40% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 96%;
+    --border: 217 33% 22%;
+    --input: 217 33% 22%;
+    --ring: 199 89% 60%;
+    --radius: 0.75rem;
+  }
+}
+
 :root {
   color-scheme: dark;
 }
@@ -12,7 +39,7 @@ body,
 body {
   margin: 0;
   background: radial-gradient(circle at top, #111827 0%, #020617 45%, #020617 100%);
-  color: #e2e8f0;
+  color: hsl(var(--foreground));
   font-family:
     "Inter", "SF Pro Text", "Segoe UI", "Roboto", "Helvetica Neue", "Arial", sans-serif;
 }
@@ -31,4 +58,3 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
-

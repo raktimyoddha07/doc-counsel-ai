@@ -10,6 +10,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "object-assign": path.resolve(__dirname, "object-assign.cjs"),
+      "@": path.resolve(__dirname, "./src"),
     },
   },
   server: {

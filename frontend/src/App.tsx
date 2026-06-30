@@ -2,18 +2,11 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Viewer, Worker } from "@react-pdf-viewer/core";
 import "@react-pdf-viewer/core/lib/styles/index.css";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
-import {
-  Box,
-  Button,
-  Chip,
-  CssBaseline,
-  Paper,
-  Stack,
-  TextField,
-  ThemeProvider,
-  Typography,
-  createTheme,
-} from "@mui/material";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 
 import { useChat } from "./hooks/useChat";
 
@@ -110,7 +103,6 @@ export default function App() {
       const rect = rootRef.current.getBoundingClientRect();
       if (!showPdfPane) return;
 
-      // Mutual resize: move divider to change BOTH chat and PDF widths.
       const total = Math.max(0, rect.width - SPLITTER_WIDTH);
       const minChat = CHAT_PANE_MIN;
       const maxChat = Math.min(CHAT_PANE_MAX, total - PDF_PANE_MIN);
@@ -239,7 +231,6 @@ export default function App() {
       citation_pages: number[];
     }>;
 
-    // Show Q/A history for this PDF.
     const next: Array<{ role: "user" | "assistant"; content: string }> = [];
     for (const c of chats) {
       next.push({ role: "user", content: c.question });
@@ -301,7 +292,6 @@ export default function App() {
       setCurrentDocumentId(typeof data.document_id === "number" ? data.document_id : null);
       setPageCount(data.page_count ?? 0);
       setDocumentContext(data.full_document_context ?? "");
-      // Refresh the recent-PDF chips for this user.
       await loadRecentDocuments();
 
       setMessages([
@@ -339,8 +329,6 @@ export default function App() {
         documentContext: documentContext.trim() ? documentContext : undefined,
         documentId: currentDocumentId,
       });
-      // Avoid a race where `streamingAssistantIndex` gets cleared
-      // before the `assistantText -> messages` effect runs.
       setMessages((prev) =>
         prev.map((m, idx) => (idx === assistantIdx ? { ...m, content: finalText } : m)),
       );
@@ -356,26 +344,8 @@ export default function App() {
   }
 
   const onJumpToPage = (page1Based: number) => {
-    // Force remount with a target page index (0-based).
     setViewerPageIndex(Math.max(0, page1Based - 1));
   };
-
-  const darkTheme = createTheme({
-    palette: {
-      mode: "dark",
-      background: {
-        default: "#020617",
-        paper: "#0f172a",
-      },
-      primary: {
-        main: "#38bdf8",
-      },
-    },
-    shape: { borderRadius: 12 },
-    typography: {
-      fontFamily: '"Inter", "Segoe UI", "Roboto", "Arial", sans-serif',
-    },
-  });
 
   const renderMessageWithCitations = (content: string) => {
     const regex = /(\[Page\s+\d+\])/g;
@@ -387,26 +357,21 @@ export default function App() {
       }
       const page = Number(match[1]);
       return (
-        <Box
+        <Badge
           key={`cite-${idx}-${page}`}
           onClick={() => onJumpToPage(page)}
-          component="button"
           title={`Jump to page ${page}`}
-          className="mx-0.5 inline-flex h-3 items-center rounded-full border border-sky-500/40 bg-sky-500/15 px-1 text-[8px] font-semibold leading-none text-sky-300 hover:bg-sky-500/25"
-          sx={{ cursor: "pointer" }}
+          className="mx-0.5 inline-flex h-3 cursor-pointer items-center rounded-full border border-sky-500/40 bg-sky-500/15 px-1 text-[8px] font-semibold leading-none text-sky-300 hover:bg-sky-500/25"
         >
           page{page}
-        </Box>
+        </Badge>
       );
     });
   };
 
   const formatAssistantMessage = (content: string) => {
-    // Model output sometimes collapses line breaks into spaces; restore readable lists.
     let formatted = content.replace(/\r\n/g, "\n");
     formatted = formatted.replace(/[ \t]+\n/g, "\n");
-    // Preserve tab characters so TSV-like table content keeps column boundaries.
-    // Normalize only repeated spaces (not tabs).
     formatted = formatted.replace(/ {2,}/g, " ");
     formatted = formatted.replace(/\n{3,}/g, "\n\n");
 
@@ -417,9 +382,6 @@ export default function App() {
     const isBulletLine = (s: string) => /^[-*]\s+/.test(s.trimStart());
     const isNumberedLine = (s: string) => /^\d+[\.\)]\s+/.test(s.trimStart());
 
-    // Line-based formatting:
-    // - Only treat bullets/numbering when they start a line (prevents breaking years like "2024.").
-    // - Ensure list items have a blank line before them when coming after a paragraph.
     const outLines: string[] = [];
     let prevWasListItem = false;
 
@@ -453,7 +415,6 @@ export default function App() {
       }
     }
 
-    // Preserve "Answer:" separation from the next numbered block when missing blank lines.
     const joined = outLines.join("\n").trim();
     const fixed = joined.replace(
       /(Answer:\s*[^\n]*)(\n)(?=\d+[\.\)]\s+)/gim,
@@ -462,244 +423,239 @@ export default function App() {
     return fixed;
   };
 
-  return (
-    !authToken ? (
-      <ThemeProvider theme={darkTheme}>
-        <CssBaseline />
-        <Box className="h-full w-full p-4 flex items-center justify-center">
-          <Paper className="w-full max-w-md border border-slate-800 bg-slate-900/80 p-5">
-            <Typography variant="h6" sx={{ mb: 1 }}>AuditLens Sign In</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ mb: 2, display: "block" }}>
-              Create/login account to keep PDF sessions and chats.
-            </Typography>
-            <Stack spacing={1.2}>
-              <TextField
-                label="Email"
-                size="small"
+  if (!authToken) {
+    return (
+      <div className="flex h-full w-full items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-lg border border-slate-800 bg-slate-900/80 p-5">
+          <h2 className="mb-1 text-lg font-semibold">AuditLens Sign In</h2>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Create/login account to keep PDF sessions and chats.
+          </p>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Email</label>
+              <Input
                 value={authEmail}
                 onChange={(e) => setAuthEmail(e.target.value)}
               />
-              <TextField
-                label="Password"
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Password</label>
+              <Input
                 type="password"
-                size="small"
                 value={authPassword}
                 onChange={(e) => setAuthPassword(e.target.value)}
               />
-              {authError ? <Typography variant="caption" color="error.main">{authError}</Typography> : null}
-              <Stack direction="row" spacing={1}>
-                <Button variant="contained" disabled={authLoading} onClick={handleAuthSubmit}>
-                  {authMode === "register" ? "Register" : "Login"}
-                </Button>
-                <Button
-                  variant="outlined"
-                  disabled={authLoading}
-                  onClick={() => setAuthMode((m) => (m === "login" ? "register" : "login"))}
-                >
-                  Switch to {authMode === "login" ? "Register" : "Login"}
-                </Button>
-              </Stack>
-            </Stack>
-          </Paper>
-        </Box>
-      </ThemeProvider>
-    ) : (
-    <ThemeProvider theme={darkTheme}>
-      <CssBaseline />
-      <Box className="h-full w-full p-4">
-        <Box ref={rootRef} sx={{ display: "flex", gap: 0, height: "100%", width: "100%", overflow: "hidden" }}>
-          <Paper
-            className="flex min-h-0 flex-col border border-slate-800 bg-slate-900/80"
-            sx={
-              showPdfPane
-                ? { width: chatPaneWidth, minWidth: CHAT_PANE_MIN, maxWidth: CHAT_PANE_MAX, flexShrink: 0 }
-                : { flex: 1, minWidth: CHAT_PANE_MIN }
-            }
-          >
-            <Box className="border-b border-slate-800 p-4">
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                <Typography variant="subtitle1" fontWeight={700}>AuditLens</Typography>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  {pageCount > 0 ? <Chip size="small" label={`${pageCount} pages`} color="primary" variant="outlined" /> : null}
-                  <Chip size="small" label={authEmail || "User"} variant="outlined" />
-                  <Chip size="small" label="Logout" onClick={handleLogout} variant="outlined" />
-                </Stack>
-              </Stack>
-              {authToken ? (
-                <Box sx={{ mb: 1 }}>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-                    Recent PDFs (latest 3)
-                  </Typography>
-                  {docsLoading ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Loading...
-                    </Typography>
-                  ) : null}
-                  <Stack direction="row" spacing={0.75} sx={{ flexWrap: "wrap" }}>
-                    {recentDocuments.map((d) => {
-                      const active = d.id === currentDocumentId;
-                      const label = d.pdf_filename ? d.pdf_filename : `Document ${d.id}`;
-                      return (
-                        <Chip
-                          key={d.id}
-                          size="small"
-                          label={label.length > 18 ? label.slice(0, 18) + "…" : label}
-                          color={active ? "primary" : "default"}
-                          variant={active ? "filled" : "outlined"}
-                          onClick={() => loadDocumentChats(d.id)}
-                        />
-                      );
-                    })}
-                    {recentDocuments.length === 0 && !docsLoading ? (
-                      <Typography variant="caption" color="text.secondary">
-                        Upload a PDF to start a session.
-                      </Typography>
-                    ) : null}
-                  </Stack>
-                </Box>
-              ) : null}
-              {!showPdfPane ? (
-                <Stack direction="row" spacing={1} sx={{ mb: 1.5 }}>
-                  {!showPdfPane ? (
-                    <Chip size="small" label="Open PDF" onClick={() => setShowPdfPane(true)} variant="outlined" />
-                  ) : null}
-                </Stack>
-              ) : null}
-              <Stack direction="row" alignItems="center" spacing={1.5}>
-                <Button component="label" variant="outlined" size="small" disabled={uploading || isStreaming}>
-                  Upload PDF
-                  <input
-                    type="file"
-                    accept="application/pdf"
-                    hidden
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) handleUpload(f);
-                    }}
-                  />
-                </Button>
-                <Typography variant="caption" color="text.secondary">
-                  {uploading ? "Extracting document..." : "Ready"}
-                </Typography>
-              </Stack>
-              {uploadError ? (
-                <Typography variant="caption" color="error.main" sx={{ mt: 1, display: "block" }}>
-                  {uploadError}
-                </Typography>
-              ) : null}
-            </Box>
+            </div>
+            {authError ? <p className="text-xs text-destructive">{authError}</p> : null}
+            <div className="flex gap-2">
+              <Button disabled={authLoading} onClick={handleAuthSubmit}>
+                {authMode === "register" ? "Register" : "Login"}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={authLoading}
+                onClick={() => setAuthMode((m) => (m === "login" ? "register" : "login"))}
+              >
+                Switch to {authMode === "login" ? "Register" : "Login"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-            <Box className="chat-scrollbar min-h-0 flex-1 space-y-3 overflow-auto p-4">
-              {messages.map((m, idx) => (
-                <Box key={idx} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
-                  <Box
-                    className={
-                      m.role === "user"
-                        ? "max-w-[88%] rounded-2xl rounded-br-md bg-sky-500 px-3 py-2 text-sm text-slate-950 shadow-sm"
-                        : "max-w-[95%] rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-3 py-2 text-sm leading-relaxed text-slate-100 shadow-sm"
-                    }
-                  >
-                    {m.role === "user"
-                      ? m.content
-                      : (
-                        <Box sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.7 }}>
-                          {renderMessageWithCitations(formatAssistantMessage(m.content))}
-                        </Box>
-                      )}
-                  </Box>
-                </Box>
-              ))}
-              {isStreaming && <Typography variant="caption" color="text.secondary">Generating answer...</Typography>}
-              {chatError ? <Typography variant="caption" color="error.main">{chatError}</Typography> : null}
-            </Box>
+  const chatPaneStyle = showPdfPane
+    ? { width: chatPaneWidth, minWidth: CHAT_PANE_MIN, maxWidth: CHAT_PANE_MAX, flexShrink: 0 }
+    : { flex: 1, minWidth: CHAT_PANE_MIN };
 
-            {citationPages.length > 0 ? (
-              <Box className="border-t border-slate-800 p-4">
-                <Typography variant="caption" className="mb-2 block uppercase tracking-wide text-slate-400">
-                  Cited pages
-                </Typography>
-                <Box className="flex flex-wrap gap-2">
-                  {citationPages.map((p) => (
-                    <Box
-                      key={p}
-                      component="button"
-                      onClick={() => onJumpToPage(p)}
-                      className="inline-flex size-8 items-center justify-center rounded-full border border-sky-500/45 bg-sky-500/12 text-xs font-semibold text-sky-300 shadow-sm transition-all hover:scale-105 hover:bg-sky-500/25"
-                    >
-                      {p}
-                    </Box>
-                  ))}
-                </Box>
-              </Box>
+  return (
+    <div className="h-full w-full p-4">
+      <div ref={rootRef} className="flex h-full w-full gap-0 overflow-hidden">
+        <div
+          className="flex min-h-0 flex-col rounded-lg border border-slate-800 bg-slate-900/80"
+          style={chatPaneStyle}
+        >
+          <div className="border-b border-slate-800 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-base font-bold">AuditLens</span>
+              <div className="flex items-center gap-1.5">
+                {pageCount > 0 ? (
+                  <Badge variant="outline" className="border-sky-500/40 text-sky-300">
+                    {pageCount} pages
+                  </Badge>
+                ) : null}
+                <Badge variant="outline">{authEmail || "User"}</Badge>
+                <Badge variant="outline" className="cursor-pointer hover:bg-accent" onClick={handleLogout}>
+                  Logout
+                </Badge>
+              </div>
+            </div>
+            {authToken ? (
+              <div className="mb-2">
+                <span className="mb-1 block text-xs text-muted-foreground">
+                  Recent PDFs (latest 3)
+                </span>
+                {docsLoading ? (
+                  <span className="text-xs text-muted-foreground">Loading...</span>
+                ) : null}
+                <div className="flex flex-wrap gap-1.5">
+                  {recentDocuments.map((d) => {
+                    const active = d.id === currentDocumentId;
+                    const label = d.pdf_filename ? d.pdf_filename : `Document ${d.id}`;
+                    return (
+                      <Badge
+                        key={d.id}
+                        variant={active ? "default" : "outline"}
+                        className="cursor-pointer"
+                        onClick={() => loadDocumentChats(d.id)}
+                      >
+                        {label.length > 18 ? label.slice(0, 18) + "…" : label}
+                      </Badge>
+                    );
+                  })}
+                  {recentDocuments.length === 0 && !docsLoading ? (
+                    <span className="text-xs text-muted-foreground">
+                      Upload a PDF to start a session.
+                    </span>
+                  ) : null}
+                </div>
+              </div>
             ) : null}
+            {!showPdfPane ? (
+              <div className="mb-3 flex gap-2">
+                <Badge variant="outline" className="cursor-pointer hover:bg-accent" onClick={() => setShowPdfPane(true)}>
+                  Open PDF
+                </Badge>
+              </div>
+            ) : null}
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={uploading || isStreaming}
+                onClick={() => document.getElementById("pdf-upload-input")?.click()}
+              >
+                Upload PDF
+              </Button>
+              <input
+                id="pdf-upload-input"
+                type="file"
+                accept="application/pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUpload(f);
+                }}
+              />
+              <span className="text-xs text-muted-foreground">
+                {uploading ? "Extracting document..." : "Ready"}
+              </span>
+            </div>
+            {uploadError ? (
+              <p className="mt-2 block text-xs text-destructive">{uploadError}</p>
+            ) : null}
+          </div>
 
-            <Box className="border-t border-slate-800 p-4">
-              <Stack direction="row" spacing={1} alignItems="flex-end">
-                <TextField
-                  fullWidth
-                  multiline
-                  minRows={2}
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  placeholder={documentContext.trim() || currentDocumentId !== null ? "Ask about this PDF..." : "Upload a PDF first..."}
-                  disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming}
-                />
-                <Button
-                  variant="contained"
-                  onClick={handleSend}
-                  disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming || !question.trim()}
+          <div className="chat-scrollbar min-h-0 flex-1 space-y-3 overflow-auto p-4">
+            {messages.map((m, idx) => (
+              <div key={idx} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+                <div
+                  className={
+                    m.role === "user"
+                      ? "max-w-[88%] rounded-2xl rounded-br-md bg-sky-500 px-3 py-2 text-sm text-slate-950 shadow-sm"
+                      : "max-w-[95%] rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-3 py-2 text-sm leading-relaxed text-slate-100 shadow-sm"
+                  }
                 >
-                  Send
-                </Button>
-              </Stack>
-            </Box>
-          </Paper>
+                  {m.role === "user"
+                    ? m.content
+                    : (
+                      <div className="[overflow-wrap:anywhere] [line-height:1.7] whitespace-pre-wrap">
+                        {renderMessageWithCitations(formatAssistantMessage(m.content))}
+                      </div>
+                    )}
+                </div>
+              </div>
+            ))}
+            {isStreaming && <span className="text-xs text-muted-foreground">Generating answer...</span>}
+            {chatError ? <span className="text-xs text-destructive">{chatError}</span> : null}
+          </div>
 
-          {showPdfPane ? (
-            <Box
-              onMouseDown={(e) => {
-                if (e.button !== 0 && e.button !== 2) return;
-                e.preventDefault();
-                userHasResizedRef.current = true;
-                setDragging("pdf");
-              }}
-              onContextMenu={(e) => e.preventDefault()}
-              onMouseEnter={() => setShowPdfSplitterHover(true)}
-              onMouseLeave={() => setShowPdfSplitterHover(false)}
-              title="Resize PDF pane"
-              sx={{
-                width: SPLITTER_WIDTH,
-                position: "relative",
-                borderRadius: 4,
-                cursor: "col-resize",
-                backgroundColor: "transparent",
-                "&::after": {
-                  content: '"↔"',
-                  position: "absolute",
-                  top: "50%",
-                  left: "50%",
-                  transform: "translate(-50%, -50%)",
-                  fontSize: 12,
-                  color: "#7dd3fc",
-                  opacity: showPdfSplitterHover || dragging === "pdf" ? 1 : 0,
-                  pointerEvents: "none",
-                },
-              }}
-            />
+          {citationPages.length > 0 ? (
+            <div className="border-t border-slate-800 p-4">
+              <span className="mb-2 block text-xs uppercase tracking-wide text-slate-400">
+                Cited pages
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {citationPages.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => onJumpToPage(p)}
+                    className="inline-flex size-8 items-center justify-center rounded-full border border-sky-500/45 bg-sky-500/12 text-xs font-semibold text-sky-300 shadow-sm transition-all hover:scale-105 hover:bg-sky-500/25"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
           ) : null}
 
-          {showPdfPane ? (
-          <Paper
-            className="min-h-0 overflow-hidden border border-slate-800 bg-slate-900/80 p-4"
-            sx={{ width: pdfPaneWidth, minWidth: PDF_PANE_MIN, maxWidth: "100%", flexShrink: 0 }}
+          <div className="border-t border-slate-800 p-4">
+            <div className="flex items-end gap-2">
+              <Textarea
+                rows={2}
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder={documentContext.trim() || currentDocumentId !== null ? "Ask about this PDF..." : "Upload a PDF first..."}
+                disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming}
+              />
+              <Button
+                onClick={handleSend}
+                disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming || !question.trim()}
+              >
+                Send
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {showPdfPane ? (
+          <div
+            onMouseDown={(e) => {
+              if (e.button !== 0 && e.button !== 2) return;
+              e.preventDefault();
+              userHasResizedRef.current = true;
+              setDragging("pdf");
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+            onMouseEnter={() => setShowPdfSplitterHover(true)}
+            onMouseLeave={() => setShowPdfSplitterHover(false)}
+            title="Resize PDF pane"
+            className="relative cursor-col-resize rounded"
+            style={{ width: SPLITTER_WIDTH, backgroundColor: "transparent" }}
           >
-            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5, minHeight: 32 }}>
-              <Typography variant="subtitle1" fontWeight={700}>Document Preview</Typography>
-              <Button size="small" variant="text" onClick={() => setShowPdfPane(false)} title="Close PDF" sx={{ minWidth: 28, px: 0.5 }}>
+            <span
+              className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-xs text-sky-300"
+              style={{ opacity: showPdfSplitterHover || dragging === "pdf" ? 1 : 0 }}
+            >
+              ↔
+            </span>
+          </div>
+        ) : null}
+
+        {showPdfPane ? (
+          <div
+            className="min-h-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/80 p-4"
+            style={{ width: pdfPaneWidth, minWidth: PDF_PANE_MIN, maxWidth: "100%", flexShrink: 0 }}
+          >
+            <div className="mb-3 flex min-h-[2rem] items-center justify-between">
+              <span className="text-base font-bold">Document Preview</span>
+              <Button size="sm" variant="ghost" onClick={() => setShowPdfPane(false)} title="Close PDF">
                 ×
               </Button>
-            </Stack>
-            <Box className="h-[calc(100%-2rem)] min-h-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950/70 p-1">
+            </div>
+            <div className="h-[calc(100%-2rem)] min-h-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950/70 p-1">
               <Worker workerUrl={pdfWorkerUrl}>
                 {pdfFileUrl ? (
                   <Viewer
@@ -709,18 +665,15 @@ export default function App() {
                     defaultScale={1}
                   />
                 ) : (
-                  <Box className="flex h-full items-center justify-center text-sm text-slate-400">
+                  <div className="flex h-full items-center justify-center text-sm text-slate-400">
                     Upload a PDF to preview it here.
-                  </Box>
+                  </div>
                 )}
               </Worker>
-            </Box>
-          </Paper>
-          ) : null}
-        </Box>
-      </Box>
-    </ThemeProvider>
-    )
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
-
