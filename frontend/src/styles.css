@@ -1,0 +1,34 @@
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top, #111827 0%, #020617 45%, #020617 100%);
+  color: #e2e8f0;
+  font-family:
+    "Inter", "SF Pro Text", "Segoe UI", "Roboto", "Helvetica Neue", "Arial", sans-serif;
+}
+
+.chat-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #334155;
+}
+
+.asset-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

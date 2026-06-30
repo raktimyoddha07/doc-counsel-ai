@@ -1,0 +1,14 @@
+# Web dependencies
+node_modules/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables (Crucial for your Gemini API key!)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
