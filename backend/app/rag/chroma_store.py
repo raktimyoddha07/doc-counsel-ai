@@ -10,13 +10,16 @@ from typing import List, Optional, Set, Tuple
 import chromadb
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 try:
-    from chains import split_document_pages
-except ImportError:
-    from backend.chains import split_document_pages
+    # Package-relative import (canonical new structure).
+    from .chains import split_document_pages
+    from .embeddings import build_embeddings
+except ImportError:  # pragma: no cover
+    # Flat-import fallback (legacy execution contexts).
+    from chains import split_document_pages  # type: ignore
+    from embeddings import build_embeddings  # type: ignore
 
 
 def sanitize_collection_name(raw: str) -> str:
@@ -39,11 +42,8 @@ def collection_name_for(
     return sanitize_collection_name(raw)
 
 
-def _embeddings(google_api_key: str, embedding_model: str) -> GoogleGenerativeAIEmbeddings:
-    return GoogleGenerativeAIEmbeddings(
-        model=embedding_model,
-        google_api_key=google_api_key,
-    )
+def _embeddings(google_api_key: str, embedding_model: str):
+    return build_embeddings(google_api_key=google_api_key, embedding_model=embedding_model)
 
 
 def _documents_from_context(

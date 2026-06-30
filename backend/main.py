@@ -26,41 +26,15 @@ from dotenv import load_dotenv
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Replace the existing import block at the top of your 1664-line main.py with this:
-try:
-    # 1. Try importing as if they are in the same folder (Local dev)
-    from retriever import extract_full_document_context_from_pdf_bytes
-    from chains import answer_question_with_llcel, question_prefers_full_document_context
-    from database import (
-        add_chat_messages,
-        ensure_langchain_message_history_table,
-        get_recent_chat_context,
-        list_document_chats_from_history,
-        make_langchain_session_id,
-    )
-except ModuleNotFoundError:
-    try:
-        # 2. Try importing from the 'src' package (Docker standard)
-        from src.retriever import extract_full_document_context_from_pdf_bytes
-        from src.chains import answer_question_with_llcel, question_prefers_full_document_context
-        from src.database import (
-            add_chat_messages,
-            ensure_langchain_message_history_table,
-            get_recent_chat_context,
-            list_document_chats_from_history,
-            make_langchain_session_id,
-        )
-    except ModuleNotFoundError:
-        # 3. Last ditch effort for specific repo-root execution
-        from backend.src.retriever import extract_full_document_context_from_pdf_bytes
-        from backend.src.chains import answer_question_with_llcel, question_prefers_full_document_context
-        from backend.src.database import (
-            add_chat_messages,
-            ensure_langchain_message_history_table,
-            get_recent_chat_context,
-            list_document_chats_from_history,
-            make_langchain_session_id,
-        )
+from app.rag.chains import answer_question_with_llcel, question_prefers_full_document_context
+from app.documents.extraction.docling_extractor import extract_full_document_context_from_pdf_bytes
+from app.chat_history.database import (
+    add_chat_messages,
+    ensure_langchain_message_history_table,
+    get_recent_chat_context,
+    list_document_chats_from_history,
+    make_langchain_session_id,
+)
 
 try:
     import asyncpg  # type: ignore
@@ -68,7 +42,7 @@ except Exception:  # pragma: no cover
     asyncpg = None
 
 try:
-    import chroma_rag as chroma_rag_module
+    from app.rag import chroma_store as chroma_rag_module
 except ImportError:  # pragma: no cover
     chroma_rag_module = None
 

@@ -19,13 +19,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 3. Copy Your Full Code
-# This copies your 1664-line main.py and the entire /src folder.
+# main.py lives at the root; feature modules live in app/{auth,rag,documents,chat_history}/.
 COPY . .
 
-# 4. Fix the "ModuleNotFoundError"
-# This is the most important line. It tells Python that the root (/app)
-# and your logic folder (/app/src) are both valid import paths.
-ENV PYTHONPATH=/app:/app/src
+# 4. PYTHONPATH
+# Root (/app) is the import root so ``from app.rag import ...`` resolves.
+ENV PYTHONPATH=/app
 
 # 5. Runtime Configuration
 EXPOSE 8000
