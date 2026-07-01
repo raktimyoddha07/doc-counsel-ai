@@ -1,12 +1,6 @@
-# AuditLens
+# Doc Counsel AI
 
-> A document-grounded PDF chat assistant for audit, compliance, and legal review. Upload a PDF, ask questions, and get answers with clickable `[Page N]` citations and an in-browser PDF viewer that jumps straight to the evidence.
-
-AuditLens extracts structured text and tables from PDFs (via Docling), indexes them with a hybrid retrieval layer (dense BGE embeddings in Chroma + sparse BM25), and answers questions using a streaming LLM (Google Gemini or a local Ollama model) that is strictly grounded in the uploaded document. Every factual answer must cite its page — wrong citations are treated as worse than no answer.
-
-## 📝 Quick Description
-
-AuditLens is a full-stack **document-grounded RAG (Retrieval-Augmented Generation)** application. A user uploads a PDF; the backend extracts page-anchored text + tables, indexes them, and then answers the user's questions with streamed answers that include `[Page N]` citations. Clicking a citation jumps the in-browser PDF viewer to that page.
+Doc Counsel AI is a full-stack **document-grounded RAG (Retrieval-Augmented Generation)** application. A user uploads a PDF; the backend extracts page-anchored text + tables, indexes them, and then answers the user's questions with streamed answers that include `[Page N]` citations. Clicking a citation jumps the in-browser PDF viewer to that page.
 
 It is positioned for **audit, compliance, and legal document review** — where exact clause retrieval, table cell lookups, and trustworthy page citations are the core trust mechanism.
 
@@ -65,7 +59,7 @@ flowchart LR
 
 ### 2. Retrieval (Hybrid: Dense + Sparse)
 
-For long documents, only the most relevant chunks are injected into the prompt. AuditLens uses **Reciprocal Rank Fusion** via LangChain's `EnsembleRetriever`:
+For long documents, only the most relevant chunks are injected into the prompt. Doc Counsel AI uses **Reciprocal Rank Fusion** via LangChain's `EnsembleRetriever`:
 
 - **Dense** — `BAAI/bge-large-en-v1.5` embeddings (local, L2-normalized) stored in a per-user/per-document **Chroma** collection.
 - **Sparse** — in-memory **BM25** index built from the same chunks, excellent at matching exact strings like `Section 4(b)(ii)` or defined terms.
@@ -73,7 +67,7 @@ For long documents, only the most relevant chunks are injected into the prompt. 
 Weights default to `[0.6 dense, 0.4 sparse]`. A routing heuristic decides whether to use full-context stuffing or retrieval:
 
 ```mermaid
-flowchart TD
+flowchart LR
     Q[Question] --> OPEN{Open-ended / whole-doc?}
     OPEN -->|yes| FULL[Use full document context]
     OPEN -->|no| SIZE{Context <= threshold?}
