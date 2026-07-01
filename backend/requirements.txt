@@ -21,4 +21,3 @@ rank_bm25
 chromadb
 psycopg[binary]
 faster-whisper
-pydub

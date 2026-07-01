@@ -16,7 +16,9 @@ The app has four core sections:
 
 **4. Citations & PDF Viewer** — Every `[Page N]` in an answer becomes a clickable citation chip. Clicking it scrolls the PDF viewer to that page. A draggable splitter resizes the chat and PDF panes.
 
-A **model selector** lets you switch the LLM provider per-chat between **Gemini** (default, cloud) and **Ollama** (local, privacy-preserving).
+A **model selector** lets you switch the LLM provider per-chat between **Ollama** (default, local, privacy-preserving) and **Gemini** (cloud). Your selected document, model, and full chat history are **restored automatically on page reload** — the active document is remembered in `localStorage`, its chat history is fetched from the backend, and the PDF is re-streamed from per-user object storage.
+
+**5. Voice input** — A 🎙 microphone button next to the Send button lets you ask questions by voice. Recording is captured in-browser (MediaRecorder), uploaded to a `/transcribe` endpoint, transcribed on the server with **faster-whisper** (CPU), and the resulting text fills the question box for review before sending.
 
 ## ⚙️ Implementation Process
 
@@ -28,6 +30,7 @@ flowchart LR
     EX --> CTX["[Page N] context string"]
     CTX --> DB[(Postgres)]
     CTX --> CH[(Chroma + BGE)]
+    U --> STORE[(uploads/ object storage)]
 
     UQ[User question] --> ROUTE{Routing}
     ROUTE -->|short / whole-doc| FULL[Full context stuffing]
@@ -35,6 +38,9 @@ flowchart LR
     CH --> RAG
     RAG --> PROMPT
     FULL --> PROMPT
+
+    MIC[🎤 Mic recording] --> TR[faster-whisper transcribe]
+    TR --> BOX[Question box]
 
     PROMPT[Prompt + Heuristic hints] --> LLM{LLM Provider}
     LLM -->|gemini| G[Gemini API]
@@ -90,6 +96,41 @@ A **heuristic table-value hint** tool scans for `metric + year` patterns and inj
 
 The `/chat` route returns a `StreamingResponse` of `text/event-stream` frames shaped as `data: {"text":"..."}\n\n` terminated by `data: [DONE]`. The frontend `useChat` hook reads the stream with a `ReadableStream` reader, buffers partial frames, and updates the message incrementally. The SSE format is load-bearing — the hook depends on it exactly.
 
+### 5. PDF Object Storage (`uploads/`)
+
+The original uploaded PDF is persisted as per-user object storage so the PDF viewer can be restored after a page reload. The storage root is configured via the `uploads` env var (default `uploads/`, resolved at the project root).
+
+- **Layout:** `uploads/<user_id>/<document_id>__<original_filename>` — the document id guarantees uniqueness on disk while the original filename is preserved for browsing.
+- **On upload:** after extraction + Postgres upsert, the raw PDF bytes are written to disk and the path is recorded in the `documents.storage_path` column.
+- **On reload:** the frontend calls `GET /documents/{id}/pdf` (Bearer-protected, ownership-enforced), fetches the file as a blob, and feeds it to the PDF viewer — so the user sees exactly the file they uploaded. The on-disk `<id>__` prefix is stripped when serving so the browser sees the original name.
+
+```mermaid
+flowchart LR
+    UP[/upload PDF/] --> EXTR[Extract + upsert]
+    EXTR --> DISK[(uploads/user_id/id__name.pdf)]
+    DISK --> PATH[documents.storage_path]
+    RELOAD[Page reload] --> GET[GET /documents/id/pdf]
+    GET --> DISK
+    GET --> BLOB[fetch as blob]
+    BLOB --> VIEWER[PDF viewer restored]
+```
+
+### 6. Voice Input (faster-whisper)
+
+A microphone button captures audio in-browser via the `MediaRecorder` API (WebM/Opus). The recorded blob is POSTed to `/transcribe`, where the server runs **faster-whisper** (CPU, `base` model) to convert speech to text. faster-whisper handles audio decoding internally through its bundled ffmpeg-based reader, so no external conversion library is needed — the raw webm/opus file is passed directly.
+
+- The WhisperModel is loaded **lazily** on first transcription (the server boots instantly even before the ~145MB model is downloaded).
+- Transcription runs in a worker thread (`asyncio.to_thread`) so the event loop isn't blocked.
+- The returned text fills (or appends to) the question textarea for user review before sending — it then flows through the normal `/chat` path, inheriting all citation/grounding behavior.
+- Model size and device are configurable via `WHISPER_MODEL` / `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` env vars.
+
+### 7. Chat Session Persistence
+
+The active document, selected provider, and full chat history survive page reloads:
+
+- **Backend:** chat history is stored in a LangChain Postgres message-history table, scoped per `(user, document)` session. It is fetched on document load via `/documents/{id}/chats` and used as passive context for follow-up questions.
+- **Frontend:** `currentDocumentId` and `provider` are persisted to `localStorage`. On boot, the app restores the last-viewed document (falling back to the most recent upload if it's no longer available), reloads its chat history, re-streams its PDF, and re-applies the saved provider selection.
+
 ### Key algorithms used
 
 - **RecursiveCharacterTextSplitter** for chunking before embedding (page-aware).
@@ -112,7 +153,9 @@ The `/chat` route returns a `StreamingResponse` of `text/event-stream` frames sh
 | Vector store | Chroma (on-disk, per user+document collections) |
 | Sparse retrieval | `rank_bm25` + LangChain `EnsembleRetriever` |
 | LLM (cloud) | Google Gemini (`langchain-google-genai`) |
-| LLM (local) | Ollama (`langchain-ollama`) |
+| LLM (local, default) | Ollama (`langchain-ollama`) |
+| Voice transcription | faster-whisper (`base` model, CPU) |
+| PDF storage | Per-user `uploads/` object storage |
 | Orchestration | LangChain / LangChain Expression Language (LCEL) |
 | Database (optional) | PostgreSQL via `asyncpg` + `langchain-postgres` |
 | Streaming | Server-Sent Events (SSE) |
@@ -127,7 +170,8 @@ The `/chat` route returns a `StreamingResponse` of `text/event-stream` frames sh
 - **Node.js 18+** and npm
 - A **Google Gemini API key** (get one from Google AI Studio)
 - **PostgreSQL** (optional — only needed for user/document/chat persistence). Without it the app runs statelessly.
-- **Ollama** (optional — only needed if you want the local-provider option). Install the native Windows build and run `ollama pull mistral`.
+- **Ollama** (optional — installed by default as the selected provider; only required if you actually use the local option). Install the native Windows build and run `ollama pull mistral`.
+- **ffmpeg** (optional — only needed for the voice/microphone feature). faster-whisper uses it internally to decode the browser's webm/opus audio. A static Windows binary on PATH is sufficient.
 
 ### Backend setup
 
@@ -204,6 +248,15 @@ RAG_FULL_CONTEXT_THRESHOLD=14000
 # Upload limits
 MAX_PAGES=10
 MAX_FULL_CONTEXT_CHARS=30000
+
+# PDF object storage folder (relative to project root). Acts as per-user storage.
+uploads=uploads
+
+# Voice transcription (faster-whisper, CPU). Optional — only for the mic button.
+# First transcription downloads the model (~145MB for "base").
+WHISPER_MODEL=base
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
 ```
 
 Create `frontend/.env`:
@@ -223,6 +276,10 @@ VITE_API_BASE_URL=http://localhost:8000
 | `RAG_TOP_K` | No | `8` | Chunks retrieved per question |
 | `RAG_FULL_CONTEXT_THRESHOLD` | No | `14000` | Chars below which full context is used |
 | `MAX_PAGES` | No | `10` | Upload page cap |
+| `uploads` | No | `uploads` | Per-user PDF object storage folder |
+| `WHISPER_MODEL` | No | `base` | faster-whisper model size |
+| `WHISPER_DEVICE` | No | `cpu` | Whisper compute device |
+| `WHISPER_COMPUTE_TYPE` | No | `int8` | Whisper compute type |
 | `VITE_API_BASE_URL` | No | `http://localhost:8000` | Frontend → backend base URL |
 
 ## 🔌 API Endpoints
@@ -233,9 +290,11 @@ All protected routes require an `Authorization: Bearer <token>` header.
 |---|---|---|---|
 | `POST` | `/auth/register` | No | Register with `{email, password}` → `{token, user_id, email}` |
 | `POST` | `/auth/login` | No | Login with `{email, password}` → `{token, user_id, email}` |
-| `POST` | `/upload` | Yes | Multipart PDF upload → `{document_id, page_count, full_document_context, extracted_assets, chroma_indexed}` |
+| `POST` | `/upload` | Yes | Multipart PDF upload → `{document_id, page_count, full_document_context, extracted_assets, chroma_indexed}`. Also persists the original PDF to `uploads/<user_id>/`. |
 | `POST` | `/chat` | Yes | `{question, document_context|document_id, provider, model?}` → SSE stream of `data: {"text":"..."}` ending in `data: [DONE]` |
+| `POST` | `/transcribe` | Yes | Multipart audio (webm/opus) → `{text: "..."}` via faster-whisper (CPU) |
 | `GET` | `/documents` | Yes | Lists the user's recent documents (max 3) |
+| `GET` | `/documents/{document_id}/pdf` | Yes | Streams the stored original PDF (ownership-enforced) |
 | `GET` | `/documents/{document_id}/chats` | Yes | Lists chat history for a document session |
 
 ## 📁 Project Structure
@@ -254,6 +313,8 @@ doc-counsel.ai/
 │       │   └── hybrid_retriever.py  # BM25 + EnsembleRetriever (RRF fusion)
 │       ├── documents/extraction/
 │       │   └── docling_extractor.py # PDF → [Page N] context via Docling
+│       ├── voice/
+│       │   └── transcriber.py       # faster-whisper (CPU) lazy singleton + transcribe
 │       ├── chat_history/
 │       │   └── database.py          # PostgresChatMessageHistory, session helpers
 │       ├── auth/
@@ -263,11 +324,14 @@ doc-counsel.ai/
 │   ├── vite.config.ts               # Vite + "@" → src/ alias
 │   ├── tailwind.config.js
 │   └── src/
-│       ├── App.tsx                  # Layout, auth, upload, chat, PDF viewer, citations
+│       ├── App.tsx                  # Layout, auth, upload, chat, PDF viewer, citations, mic
 │       ├── main.tsx
-│       ├── hooks/useChat.ts         # SSE stream consumer, sends provider per request
+│       ├── hooks/
+│       │   ├── useChat.ts           # SSE stream consumer, sends provider per request
+│       │   └── useVoiceRecorder.ts  # MediaRecorder wrapper for voice input
 │       ├── lib/utils.ts             # cn() Tailwind class merge
 │       └── components/ui/           # shadcn/ui primitives (button, input, badge, …)
+├── uploads/                         # Per-user PDF object storage (uploads/<user_id>/…)
 ├── docker-compose.yml
 ├── AGENTS.md
 └── README.md

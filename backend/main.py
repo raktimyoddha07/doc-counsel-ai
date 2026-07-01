@@ -1598,12 +1598,11 @@ async def upload(
     # Extract using LangChain:
     # - `PyMuPDFLoader` for per-page text
     # - `RecursiveCharacterTextSplitter` for context-friendly chunking
-    full_document_context, page_count = extract_full_document_context_from_pdf_bytes(
+    full_document_context, page_count, extracted_assets = extract_full_document_context_from_pdf_bytes(
         pdf_bytes=pdf_bytes,
         max_pages=MAX_PAGES,
         max_full_context_chars=MAX_FULL_CONTEXT_CHARS,
     )
-    extracted_assets = []
 
     stored_document_id: Optional[int] = None
     storage_path: Optional[str] = None

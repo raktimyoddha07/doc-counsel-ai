@@ -707,14 +707,30 @@ export default function App() {
           ) : null}
 
           <div className="border-t border-slate-800 p-4">
-            <div className="flex items-end gap-2">
-              <Textarea
-                rows={2}
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder={documentContext.trim() || currentDocumentId !== null ? "Ask about this PDF..." : "Upload a PDF first..."}
-                disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming}
-              />
+            <Textarea
+              rows={3}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder={documentContext.trim() || currentDocumentId !== null ? "Ask about this PDF..." : "Upload a PDF first..."}
+              disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming}
+              className="w-full"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-slate-400">Model</span>
+              <select
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as "ollama" | "gemini")}
+                disabled={isStreaming}
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none transition-colors hover:border-slate-600 focus:border-sky-500 disabled:opacity-50"
+                title="Choose the LLM used to answer"
+              >
+                <option value="ollama">Ollama (Local)</option>
+                <option value="gemini">Gemini</option>
+              </select>
+              {provider === "ollama" ? (
+                <span className="text-[11px] text-amber-400/80">running locally, may be slower</span>
+              ) : null}
+              <div className="ml-auto flex items-center gap-2">
               {micSupported ? (
                 <Button
                   type="button"
@@ -742,6 +758,7 @@ export default function App() {
               >
                 Send
               </Button>
+              </div>
             </div>
             {(voiceError || micError) ? (
               <p className="mt-1 block text-xs text-destructive">{voiceError ?? micError}</p>
@@ -749,22 +766,6 @@ export default function App() {
             {recording ? (
               <p className="mt-1 block text-xs text-red-300">Recording… click ■ to stop and transcribe.</p>
             ) : null}
-            <div className="mt-2 flex items-center gap-2">
-              <span className="text-xs text-slate-400">Model</span>
-              <select
-                value={provider}
-                onChange={(e) => setProvider(e.target.value as "ollama" | "gemini")}
-                disabled={isStreaming}
-                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none transition-colors hover:border-slate-600 focus:border-sky-500 disabled:opacity-50"
-                title="Choose the LLM used to answer"
-              >
-                <option value="ollama">Ollama (Local)</option>
-                <option value="gemini">Gemini</option>
-              </select>
-              {provider === "ollama" ? (
-                <span className="text-[11px] text-amber-400/80">running locally, may be slower</span>
-              ) : null}
-            </div>
           </div>
         </div>
 
