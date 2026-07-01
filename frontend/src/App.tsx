@@ -48,6 +48,8 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
 
   const [question, setQuestion] = useState("");
+  // LLM provider picker (Migration 6). Default Ollama (local); user can switch to Gemini.
+  const [provider, setProvider] = useState<"ollama" | "gemini">("ollama");
 
   const { isStreaming, error: chatError, assistantText, sendChat } = useChat({
     apiBaseUrl,
@@ -348,6 +350,7 @@ export default function App() {
         token: authToken,
         documentContext: documentContext.trim() ? documentContext : undefined,
         documentId: currentDocumentId,
+        provider,
       });
       setMessages((prev) =>
         prev.map((m, idx) => (idx === assistantIdx ? { ...m, content: finalText } : m)),
@@ -636,6 +639,22 @@ export default function App() {
               >
                 Send
               </Button>
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-slate-400">Model</span>
+              <select
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as "ollama" | "gemini")}
+                disabled={isStreaming}
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none transition-colors hover:border-slate-600 focus:border-sky-500 disabled:opacity-50"
+                title="Choose the LLM used to answer"
+              >
+                <option value="ollama">Ollama (Local)</option>
+                <option value="gemini">Gemini</option>
+              </select>
+              {provider === "ollama" ? (
+                <span className="text-[11px] text-amber-400/80">running locally, may be slower</span>
+              ) : null}
             </div>
           </div>
         </div>

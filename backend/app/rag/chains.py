@@ -237,6 +237,17 @@ _OPEN_ENDED_Q_HINTS = (
     "tell me about",
     "explain this document",
     "all about",
+    "what does the document",
+    "what is the purpose",
+    "what are the key",
+    "what are the main",
+    "what are the terms",
+    "what are the obligations",
+    "what are the rights",
+    "what are the conditions",
+    "define",
+    "meaning of",
+    "purpose of",
 )
 
 
@@ -279,6 +290,11 @@ def looks_incomplete_answer(text: str, question: str = "") -> bool:
         return False
     # If we see at least one "Answer: X" and numbered options/question blocks, consider it complete.
     if re.search(r"\bAnswer:\s*[A-D]\b", t, flags=re.I) and re.search(r"(^|\n)\s*\d+[\.\)]\s+", t):
+        return False
+    # Answers ending with a [Page N] citation are complete — this is the normal
+    # citation format the system prompt instructs the model to emit. The bracket
+    # is the terminal marker; a trailing period after it is optional.
+    if re.search(r"\[Page\s+\d+\]\s*$", t):
         return False
     if not re.search(r"[.!?]$", t):
         # If it ends with a bare word and no terminal punctuation, it's often truncated.
