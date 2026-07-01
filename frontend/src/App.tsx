@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 
 import { useChat } from "./hooks/useChat";
+import { useVoiceRecorder } from "./hooks/useVoiceRecorder";
 
 const CHAT_PANE_DEFAULT = 440;
 const CHAT_PANE_MIN = 320;
@@ -30,7 +31,11 @@ export default function App() {
   const [viewerPageIndex, setViewerPageIndex] = useState(0);
 
   const [documentContext, setDocumentContext] = useState<string>("");
-  const [currentDocumentId, setCurrentDocumentId] = useState<number | null>(null);
+  const [currentDocumentId, setCurrentDocumentId] = useState<number | null>(() => {
+    const saved = localStorage.getItem("auditlens_current_doc");
+    const n = saved ? Number(saved) : NaN;
+    return Number.isFinite(n) ? n : null;
+  });
   const [recentDocuments, setRecentDocuments] = useState<
     Array<{ id: number; created_at: string; pdf_filename: string; page_count: number }>
   >([]);
@@ -49,11 +54,23 @@ export default function App() {
 
   const [question, setQuestion] = useState("");
   // LLM provider picker (Migration 6). Default Ollama (local); user can switch to Gemini.
-  const [provider, setProvider] = useState<"ollama" | "gemini">("ollama");
+  const [provider, setProvider] = useState<"ollama" | "gemini">(
+    () => (localStorage.getItem("auditlens_provider") as "ollama" | "gemini") || "ollama",
+  );
 
   const { isStreaming, error: chatError, assistantText, sendChat } = useChat({
     apiBaseUrl,
   });
+
+  const {
+    recording,
+    supported: micSupported,
+    error: micError,
+    start: startRecording,
+    stop: stopRecording,
+  } = useVoiceRecorder();
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>(
     [],
@@ -97,6 +114,18 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (currentDocumentId !== null) {
+      localStorage.setItem("auditlens_current_doc", String(currentDocumentId));
+    } else {
+      localStorage.removeItem("auditlens_current_doc");
+    }
+  }, [currentDocumentId]);
+
+  useEffect(() => {
+    localStorage.setItem("auditlens_provider", provider);
+  }, [provider]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -268,6 +297,8 @@ export default function App() {
     }
   }
 
+  const chatsRestoredRef = useRef(false);
+
   useEffect(() => {
     if (!authToken) return;
     loadRecentDocuments();
@@ -276,9 +307,16 @@ export default function App() {
 
   useEffect(() => {
     if (!authToken) return;
-    if (currentDocumentId !== null) return;
+    if (chatsRestoredRef.current) return;
     if (!recentDocuments.length) return;
-    loadDocumentChats(recentDocuments[0].id);
+    chatsRestoredRef.current = true;
+    // Prefer the document the user was last viewing (saved in localStorage);
+    // fall back to the most recent upload if it's no longer available.
+    const savedId = Number(localStorage.getItem("auditlens_current_doc"));
+    const targetId = Number.isFinite(savedId) && recentDocuments.some((d) => d.id === savedId)
+      ? savedId
+      : recentDocuments[0].id;
+    loadDocumentChats(targetId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recentDocuments, authToken]);
 
@@ -364,6 +402,50 @@ export default function App() {
     }
 
     setStreamingAssistantIndex(null);
+  }
+
+  // Toggle the mic: start recording, or stop + transcribe and fill the question box.
+  async function handleMicToggle() {
+    setVoiceError(null);
+    if (recording) {
+      setTranscribing(true);
+      try {
+        const blob = await stopRecording();
+        if (!blob || blob.size === 0) {
+          setVoiceError("No audio captured. Try again.");
+          return;
+        }
+        const form = new FormData();
+        form.append("audio", blob, "voice.webm");
+        const res = await fetch(`${apiBaseUrl}/transcribe`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${authToken}` },
+          body: form,
+        });
+        if (!res.ok) {
+          const msg = await res.text().catch(() => "");
+          setVoiceError(`Transcription failed (HTTP ${res.status}): ${msg || res.statusText}`);
+          return;
+        }
+        const data = (await res.json()) as { text?: string; error?: string };
+        if (data.error) {
+          setVoiceError(data.error);
+          return;
+        }
+        const text = (data.text ?? "").trim();
+        if (!text) {
+          setVoiceError("No speech detected. Try speaking more clearly.");
+          return;
+        }
+        setQuestion((prev) => (prev.trim() ? `${prev} ${text}` : text));
+      } catch (e: unknown) {
+        setVoiceError(e instanceof Error ? e.message : "Voice input failed.");
+      } finally {
+        setTranscribing(false);
+      }
+    } else {
+      await startRecording();
+    }
   }
 
   const onJumpToPage = (page1Based: number) => {
@@ -633,6 +715,27 @@ export default function App() {
                 placeholder={documentContext.trim() || currentDocumentId !== null ? "Ask about this PDF..." : "Upload a PDF first..."}
                 disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming}
               />
+              {micSupported ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={handleMicToggle}
+                  disabled={
+                    isStreaming ||
+                    transcribing ||
+                    (documentContext.trim() === "" && currentDocumentId === null)
+                  }
+                  title={recording ? "Stop recording" : "Speak your question"}
+                  className={
+                    recording
+                      ? "animate-pulse border-red-500 bg-red-500/15 text-red-300 hover:bg-red-500/25"
+                      : "border-slate-600 text-slate-300 hover:text-sky-300"
+                  }
+                >
+                  {transcribing ? "…" : recording ? "■" : "🎙"}
+                </Button>
+              ) : null}
               <Button
                 onClick={handleSend}
                 disabled={(documentContext.trim() === "" && currentDocumentId === null) || isStreaming || !question.trim()}
@@ -640,6 +743,12 @@ export default function App() {
                 Send
               </Button>
             </div>
+            {(voiceError || micError) ? (
+              <p className="mt-1 block text-xs text-destructive">{voiceError ?? micError}</p>
+            ) : null}
+            {recording ? (
+              <p className="mt-1 block text-xs text-red-300">Recording… click ■ to stop and transcribe.</p>
+            ) : null}
             <div className="mt-2 flex items-center gap-2">
               <span className="text-xs text-slate-400">Model</span>
               <select

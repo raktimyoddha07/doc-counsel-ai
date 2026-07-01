@@ -31,6 +31,7 @@ from app.rag.chains import (
     question_prefers_full_document_context,
 )
 from app.documents.extraction.docling_extractor import extract_full_document_context_from_pdf_bytes
+from app.voice.transcriber import transcribe_audio_file, TranscriptionError
 from app.chat_history.database import (
     add_chat_messages,
     ensure_langchain_message_history_table,
@@ -1338,6 +1339,61 @@ async def get_document_pdf(
         media_type="application/pdf",
         filename=download_name,
     )
+
+
+@app.post("/transcribe")
+async def transcribe(
+    audio: UploadFile = File(...),
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Dict[str, object]:
+    """
+    Transcribe an audio blob (webm/opus from the browser MediaRecorder, or
+    wav/mp3) using faster-whisper on CPU. Returns ``{"text": "..."}``.
+
+    Bearer-protected (Architecture Rule 3). Transcription is CPU-bound, so it
+    runs in a worker thread via ``asyncio.to_thread`` (same pattern as Docling /
+    Chroma) to avoid blocking the event loop.
+    """
+    require_user_claims(authorization)
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio upload.")
+
+    tmp_path = None
+    try:
+        suffix = ".webm"
+        ctype = (audio.content_type or "").lower()
+        if "wav" in ctype:
+            suffix = ".wav"
+        elif "mp3" in ctype:
+            suffix = ".mp3"
+        elif "ogg" in ctype:
+            suffix = ".ogg"
+        elif (audio.filename or "").lower().endswith((".wav", ".mp3", ".ogg", ".m4a")):
+            ext = os.path.splitext(audio.filename or "")[1]
+            if ext:
+                suffix = ext
+
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp.flush()
+            tmp_path = tmp.name
+
+        text = await asyncio.to_thread(transcribe_audio_file, tmp_path)
+        return {"text": text}
+    except TranscriptionError as exc:
+        # Return a friendly error on the normal channel so the UI can show it
+        # instead of surfacing a bare 500.
+        return {"text": "", "error": str(exc)}
+    except Exception as exc:
+        return {"text": "", "error": f"Transcription failed: {exc}"}
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 async def upsert_document(
