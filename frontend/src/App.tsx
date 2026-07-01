@@ -239,11 +239,31 @@ export default function App() {
     setMessages(next);
     setCurrentDocumentId(documentId);
     setDocumentContext("");
-    setPdfFileUrl(null);
     setViewerPageIndex(0);
     const doc = recentDocuments.find((d) => d.id === documentId);
     if (doc) setPageCount(doc.page_count ?? 0);
     setStreamingAssistantIndex(null);
+
+    // Restore the original PDF from per-user object storage so the viewer
+    // can render it (fetch-to-blob keeps the Bearer token in the header
+    // instead of exposing it in a URL).
+    try {
+      const pdfRes = await fetch(`${apiBaseUrl}/documents/${documentId}/pdf`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (pdfRes.ok) {
+        const blob = await pdfRes.blob();
+        if (blob && blob.size > 0) {
+          const objectUrl = URL.createObjectURL(blob);
+          setPdfFileUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return objectUrl;
+          });
+        }
+      }
+    } catch {
+      // no-op: viewer just stays hidden if the stored PDF is unavailable
+    }
   }
 
   useEffect(() => {

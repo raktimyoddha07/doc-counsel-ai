@@ -13,4 +13,6 @@ env/
 __pycache__/
 *.pyc
 
+/uploads
+
 AGENTS.md

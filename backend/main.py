@@ -17,7 +17,7 @@ import tempfile
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from pypdf import PdfReader
 
@@ -106,6 +106,14 @@ RAG_FULL_CONTEXT_THRESHOLD = int(os.getenv("RAG_FULL_CONTEXT_THRESHOLD", "14000"
 REDACT_TAG_MARKER_FROM = "</document_context>"
 REDACT_TAG_MARKER_TO = "__TAG_REMOVED__"
 
+# Object storage for uploaded PDFs. The `uploads` env var names the folder
+# (relative to the project root) that acts as per-user object storage.
+# Layout: <UPLOADS_ROOT>/<user_id>/<document_id>__<original_filename>
+UPLOADS_DIR_NAME = os.getenv("uploads", "uploads")
+UPLOADS_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", UPLOADS_DIR_NAME)
+)
+
 
 def sse_event_data(payload: str) -> str:
     # SSE framing required by the spec: data: <payload>\n\n
@@ -123,6 +131,73 @@ def enforce_full_context_size(full_document_context: str) -> None:
             status_code=413,
             detail=f"Extracted context too large ({len(full_document_context)} chars). Please upload a smaller/less dense document."
         )
+
+
+# ----------------------------
+# PDF object storage (uploads/)
+# ----------------------------
+_STORAGE_FILENAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._\- ]")
+
+
+def _sanitize_storage_filename(name: str) -> str:
+    """Make a client-supplied filename safe to write to disk, keeping its extension."""
+    if not name:
+        return "document.pdf"
+    # Strip any directory components the client may have sent.
+    base = os.path.basename(name).strip()
+    if not base:
+        return "document.pdf"
+    # Replace characters that are unsafe across operating systems.
+    safe = _STORAGE_FILENAME_UNSAFE_RE.sub("_", base)
+    safe = safe.strip().rstrip(".") or "document.pdf"
+    if not safe.lower().endswith(".pdf"):
+        safe += ".pdf"
+    return safe
+
+
+def storage_path_for(user_id: int, document_id: int, original_filename: str) -> str:
+    """
+    Absolute path for a stored PDF:
+      <UPLOADS_ROOT>/<user_id>/<document_id>__<original_filename>
+    The leading ``<document_id>__`` guarantees uniqueness on disk while the
+    rest keeps the human-readable original name. ``original_filename`` is the
+    raw client filename; the ``__<id>`` prefix is stripped when serving so the
+    browser sees the exact original name.
+    """
+    user_dir = os.path.join(UPLOADS_ROOT, str(int(user_id)))
+    os.makedirs(user_dir, exist_ok=True)
+    safe_name = _sanitize_storage_filename(original_filename)
+    filename = f"{int(document_id)}__{safe_name}"
+    return os.path.join(user_dir, filename)
+
+
+def original_filename_from_storage_path(storage_path: str) -> str:
+    """Reverse of ``storage_path_for``: strip the ``<id>__`` prefix."""
+    base = os.path.basename(storage_path or "")
+    if "__" in base:
+        base = base.split("__", 1)[1]
+    return base or "document.pdf"
+
+
+def save_uploaded_pdf(
+    *,
+    user_id: int,
+    document_id: int,
+    original_filename: str,
+    pdf_bytes: bytes,
+) -> Optional[str]:
+    """
+    Persist the original uploaded PDF bytes under uploads/<user_id>/.
+    Returns the absolute path written, or None on failure. Best-effort:
+    callers swallow exceptions so disk issues never break the upload flow.
+    """
+    try:
+        path = storage_path_for(user_id, document_id, original_filename)
+        with open(path, "wb") as f:
+            f.write(pdf_bytes)
+        return path
+    except Exception:
+        return None
 
 
 def build_auditor_system_prompt() -> str:
@@ -1058,6 +1133,7 @@ async def init_postgres_if_configured() -> None:
                 page_count INTEGER NOT NULL DEFAULT 0,
                 full_document_context TEXT NOT NULL,
                 extracted_assets JSONB NOT NULL DEFAULT '[]'::jsonb,
+                storage_path TEXT,
                 UNIQUE (user_id, document_context_hash)
             );
             """
@@ -1077,10 +1153,16 @@ async def init_postgres_if_configured() -> None:
         )
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;")
         await conn.execute("ALTER TABLE chats ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;")
+        await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS storage_path TEXT;")
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    # Ensure the object-storage root exists (per-user subdirs are created on write).
+    try:
+        os.makedirs(UPLOADS_ROOT, exist_ok=True)
+    except Exception:
+        pass
     await init_postgres_if_configured()
     if DATABASE_URL:
         try:
@@ -1194,6 +1276,70 @@ async def list_document_chats(
         return []
 
 
+@app.get("/documents/{document_id}/pdf")
+async def get_document_pdf(
+    document_id: int,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> FileResponse:
+    """
+    Stream the originally-uploaded PDF for a document.
+
+    Bearer-protected and scoped to the document's owner (Architecture Rule 3).
+    Serves the file from the per-user object-storage folder (uploads/). The
+    ``<id>__`` prefix on disk is stripped so the browser sees the exact
+    original filename the user uploaded.
+    """
+    claims = require_user_claims(authorization)
+    user_id = int(claims["uid"])
+
+    storage_path: Optional[str] = None
+    original_filename = "document.pdf"
+
+    if db_pool is not None:
+        row = await db_pool.fetchrow(
+            "SELECT storage_path, pdf_filename, user_id FROM documents WHERE id = $1",
+            int(document_id),
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        # Enforce ownership — do not leak other users' PDFs.
+        owner_id = row["user_id"]
+        if owner_id is not None and int(owner_id) != user_id:
+            raise HTTPException(status_code=404, detail="Document not found.")
+        storage_path = row["storage_path"]
+        original_filename = str(row["pdf_filename"] or original_filename)
+
+    # Fallback: recompute the expected path if the row predates storage_path.
+    if not storage_path:
+        candidate = storage_path_for(
+            user_id=user_id,
+            document_id=int(document_id),
+            original_filename=original_filename,
+        )
+        if os.path.exists(candidate):
+            storage_path = candidate
+        else:
+            # Last resort: scan the user's folder for any file prefixed with "<id>__".
+            user_dir = os.path.join(UPLOADS_ROOT, str(user_id))
+            if os.path.isdir(user_dir):
+                prefix = f"{int(document_id)}__"
+                for entry in os.listdir(user_dir):
+                    if entry.startswith(prefix) and entry.lower().endswith(".pdf"):
+                        storage_path = os.path.join(user_dir, entry)
+                        break
+
+    if not storage_path or not os.path.exists(storage_path):
+        raise HTTPException(status_code=404, detail="Stored PDF not found for this document.")
+
+    # Derive the original name from the on-disk filename (strips the "<id>__" prefix).
+    download_name = original_filename_from_storage_path(storage_path)
+    return FileResponse(
+        path=storage_path,
+        media_type="application/pdf",
+        filename=download_name,
+    )
+
+
 async def upsert_document(
     *,
     user_id: int,
@@ -1202,6 +1348,7 @@ async def upsert_document(
     document_context: str,
     page_count: int,
     extracted_assets: Optional[List[Dict]] = None,
+    storage_path: Optional[str] = None,
 ) -> Optional[int]:
     """
     Stores the extracted document context so chat history can be linked later.
@@ -1220,6 +1367,17 @@ async def upsert_document(
         context_hash,
     )
     if doc_id is not None:
+        # Backfill storage_path on an existing row if a new one was provided
+        # (e.g. re-upload of identical content). Keeps the row's pointer current.
+        if storage_path:
+            try:
+                await db_pool.execute(
+                    "UPDATE documents SET storage_path = $1 WHERE id = $2 AND (storage_path IS NULL OR storage_path <> $1)",
+                    storage_path,
+                    int(doc_id),
+                )
+            except Exception:
+                pass
         return int(doc_id)
 
     await db_pool.execute(
@@ -1231,9 +1389,10 @@ async def upsert_document(
             document_context_hash,
             page_count,
             full_document_context,
-            extracted_assets
+            extracted_assets,
+            storage_path
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
         ON CONFLICT (user_id, document_context_hash) DO NOTHING
         """,
         int(user_id),
@@ -1243,6 +1402,7 @@ async def upsert_document(
         page_count,
         document_context,
         assets_json,
+        storage_path,
     )
 
     doc_id = await db_pool.fetchval(
@@ -1390,6 +1550,7 @@ async def upload(
     extracted_assets = []
 
     stored_document_id: Optional[int] = None
+    storage_path: Optional[str] = None
     # Best-effort persistence (no-op if DB not configured).
     try:
         stored_document_id = await upsert_document(
@@ -1403,6 +1564,34 @@ async def upload(
         await prune_old_documents_for_user(user_id=user_id, keep_latest=3)
     except Exception:
         # Never break upload flow due to DB issues.
+        pass
+
+    # Persist the original PDF as object storage under uploads/<user_id>/.
+    # Use the DB document id when available; fall back to a content hash so a
+    # filename still exists even when Postgres is disabled. Best-effort.
+    try:
+        disk_id = (
+            int(stored_document_id)
+            if stored_document_id is not None
+            else f"nodb_{sha256_hex_bytes(pdf_bytes)[:16]}"
+        )
+        storage_path = save_uploaded_pdf(
+            user_id=user_id,
+            document_id=disk_id,
+            original_filename=pdf.filename or "document.pdf",
+            pdf_bytes=pdf_bytes,
+        )
+        # Record the path on the row now that we have it (idempotent UPDATE).
+        if stored_document_id is not None and storage_path and db_pool is not None:
+            try:
+                await db_pool.execute(
+                    "UPDATE documents SET storage_path = $1 WHERE id = $2 AND (storage_path IS NULL OR storage_path <> $1)",
+                    storage_path,
+                    int(stored_document_id),
+                )
+            except Exception:
+                pass
+    except Exception:
         pass
 
     chroma_indexed = False
