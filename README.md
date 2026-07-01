@@ -1,323 +1,292 @@
-# DocCounsel AI
+# AuditLens
 
-DocCounsel AI is a document-grounded analysis assistant for PDFs.  
-The app extracts structured PDF content (text, tables, images), builds page-aware context, and answers user questions with citations tied to original pages.
+> A document-grounded PDF chat assistant for audit, compliance, and legal review. Upload a PDF, ask questions, and get answers with clickable `[Page N]` citations and an in-browser PDF viewer that jumps straight to the evidence.
 
-This README is intentionally detailed so a new developer can understand the system end-to-end without opening many files first.
+AuditLens extracts structured text and tables from PDFs (via Docling), indexes them with a hybrid retrieval layer (dense BGE embeddings in Chroma + sparse BM25), and answers questions using a streaming LLM (Google Gemini or a local Ollama model) that is strictly grounded in the uploaded document. Every factual answer must cite its page — wrong citations are treated as worse than no answer.
 
-### Resume highlights
+## 📝 Quick Description
 
-- **Document-grounded AI assistant** — Built a full-stack app (React/TypeScript, FastAPI, PostgreSQL) that ingests PDFs, preserves page-level context, and answers questions with evidence and clickable page citations.
-- **LangChain + Gemini RAG (Chroma)** — PDF chunking, **`GoogleGenerativeAIEmbeddings`**, **Chroma** persistent vector store (`langchain-chroma`), top-k **similarity retrieval** into the LLM prompt for large documents, plus **`langchain-postgres`** session history and SSE streaming.
-- **Production-oriented API design** — Implemented authenticated REST (`/auth`, `/upload`, `/documents`, `/chat`), multipart uploads, server-sent events for chat, and optional **asyncpg**/**psycopg** persistence for users, documents, and sessions.
+AuditLens is a full-stack **document-grounded RAG (Retrieval-Augmented Generation)** application. A user uploads a PDF; the backend extracts page-anchored text + tables, indexes them, and then answers the user's questions with streamed answers that include `[Page N]` citations. Clicking a citation jumps the in-browser PDF viewer to that page.
 
----
+It is positioned for **audit, compliance, and legal document review** — where exact clause retrieval, table cell lookups, and trustworthy page citations are the core trust mechanism.
 
-## 1. Product Goal
+## 🚀 How to Use
 
-AuditLens is designed to:
-- accept a PDF upload
-- preserve page context for reliable citation
-- return grounded answers tied to document evidence
-- provide a practical UI for reading, asking, and validating answers
+The app has four core sections:
 
-Key behavior:
-- answers should be based on provided PDF content
-- citations appear as page tags and are clickable
-- UI supports chat + PDF preview + extracted assets side by side
+**1. Authentication** — Sign up / log in with email + password. On success you receive a Bearer token that is stored locally and attached to every subsequent request. All document and chat routes require it.
 
----
+**2. Upload** — Drag or pick a PDF (max ~25 MB, page cap configurable via `MAX_PAGES`). The backend extracts text and tables into a `[Page N]`-anchored context, optionally indexes it into Chroma, and returns the document id. The PDF preview opens in the right-hand viewer pane.
 
-## 2. Complete Tech Stack
+**3. Chat** — Type a question about the document. The answer streams in token-by-token (SSE). Answers are grounded only in the uploaded PDF; off-topic requests are refused. Numeric/table questions ("net profit in 2026") trigger a heuristic table-lookup pass to extract exact cell values.
 
-### Frontend
-- **React 18** (TypeScript)
-- **Vite**
-- **Material UI** (`@mui/material`, Emotion)
-- Tailwind-style utility classes in JSX
-- **`@react-pdf-viewer/core`** + **`pdfjs-dist`** for in-browser PDF preview
+**4. Citations & PDF Viewer** — Every `[Page N]` in an answer becomes a clickable citation chip. Clicking it scrolls the PDF viewer to that page. A draggable splitter resizes the chat and PDF panes.
 
-### Backend
-- **Python** 3.12+ (3.12–3.13 recommended; some LangChain/Pydantic paths warn on 3.14+ until upstream catches up)
-- **FastAPI** + **Uvicorn** (ASGI)
-- **LangChain 1.x** — `langchain`, `langchain-core` (via transitive deps), **`langchain-community`** (e.g. `PyMuPDFLoader`), **`langchain-text-splitters`** (`RecursiveCharacterTextSplitter`)
-- **`langchain-google-genai`** — `ChatGoogleGenerativeAI` and **`GoogleGenerativeAIEmbeddings`** (Gemini embedding model, default `gemini-embedding-001`)
-- **`langchain-chroma`** + **`chromadb`** — on-disk vector index under `backend/chroma_data/` (path configurable); indexes PDF chunks with page metadata for question-specific retrieval
-- **`langchain-postgres`** — `PostgresChatMessageHistory` for optional conversation storage
-- **PDF processing** — **`pymupdf`** / **`pymupdf4llm`** (helpers and advanced extraction paths), **`pypdf`** where used for validation/metadata
-- **`google-generativeai`** — legacy Gemini client still used for some image-caption helpers in `main.py`
-- **Persistence (optional)** — **`asyncpg`** connection pool for app tables; **`psycopg`** (async) for LangChain Postgres history
-- **`python-multipart`** for uploads, **`python-dotenv`** for configuration
+A **model selector** lets you switch the LLM provider per-chat between **Gemini** (default, cloud) and **Ollama** (local, privacy-preserving).
 
-### Integration
-- **REST** — auth, upload, document listing, chat payload
-- **SSE** (`text/event-stream`) — chat responses framed as `data: ...` plus `[DONE]`
-- **PostgreSQL** (optional) — users, documents, chats, LangChain message table when `DATABASE_URL` is set
-- **Chroma** (local) — vector retrieval layer when `USE_CHROMA=true` and `GEMINI_API_KEY` is set; does not replace Postgres, complements it
+## ⚙️ Implementation Process
 
----
+### High-level data flow
 
-## 3. Repository Layout
+```mermaid
+flowchart LR
+    U[User uploads PDF] --> EX[Docling Extraction]
+    EX --> CTX["[Page N] context string"]
+    CTX --> DB[(Postgres)]
+    CTX --> CH[(Chroma + BGE)]
 
-Top-level directories:
-- `backend/` - API logic, extraction pipeline, prompting, streaming
-- `frontend/` - application UI and chat client logic
-- `description.txt` - original product requirement notes
-- `README.md` - this documentation
+    UQ[User question] --> ROUTE{Routing}
+    ROUTE -->|short / whole-doc| FULL[Full context stuffing]
+    ROUTE -->|long doc, specific| RAG[Hybrid retrieval]
+    CH --> RAG
+    RAG --> PROMPT
+    FULL --> PROMPT
 
-Backend core files:
-- `backend/main.py` — FastAPI app, auth, upload/chat routes, Gemini + SSE helpers
-- `backend/retriever.py` — LangChain `PyMuPDFLoader` + `RecursiveCharacterTextSplitter`, builds `[Page N]` context
-- `backend/chains.py` — LCEL prompt chain, `ChatGoogleGenerativeAI`, repair pass, table heuristics
-- `backend/chroma_rag.py` — Chroma ingest + similarity search; collection naming per user and `document_id` (or content hash if no DB id)
-- `backend/database.py` — optional Postgres chat history (`PostgresChatMessageHistory`, session ids)
-
-Frontend core files:
-- `frontend/src/App.tsx`
-  - main app layout and pane management
-  - upload and chat interactions
-  - citation rendering and PDF jump behavior
-- `frontend/src/hooks/useChat.ts`
-  - streaming SSE consumer
-  - chunk parsing and incremental assistant text updates
-- `frontend/src/styles.css`
-  - global dark theme styles and utility CSS
-- `frontend/vite.config.ts`
-  - build/dev configuration and module alias settings
-- `frontend/object-assign.cjs`
-  - compatibility shim to resolve `object-assign` in current dependency chain
-
----
-
-## 4. System Architecture
-
-Runtime processes:
-
-1. **Frontend** — Vite dev server or static production build
-2. **Backend** — FastAPI on Uvicorn
-3. **PostgreSQL** (optional) — when `DATABASE_URL` is configured: users, uploaded document metadata, chat rows, and LangChain-compatible message history
-
-Data boundary:
-- The browser sends **Bearer-authenticated** upload and chat requests (see §6).
-- Each `/chat` call may include **`document_context`** from the client and/or **`document_id`** so the server can load stored context from Postgres.
-- For **long** documents (above `RAG_FULL_CONTEXT_THRESHOLD` characters), `/chat` pulls **top-k Chroma chunks** into the prompt instead of stuffing the entire PDF, while numeric table **heuristics** still see the **full** stored context when available.
-- Questions that look like **whole-document summaries** skip retrieval and still use the full text path.
-- Chat replies are streamed over SSE; the UI parses citations like `[Page 3]` and jumps the PDF viewer.
-
----
-
-## 5. End-to-End Execution Flow
-
-### 5.1 Upload request flow
-
-1. User selects PDF in UI.
-2. Frontend creates `FormData` and posts to `POST /upload`.
-3. Backend validates:
-   - file extension/content type
-   - size cap
-   - page cap (`MAX_PAGES`)
-4. Backend reads the PDF with **LangChain** `PyMuPDFLoader`, splits with **`RecursiveCharacterTextSplitter`**, and assembles **`full_document_context`** with explicit `[Page X]` markers (see `retriever.py`).
-5. If Postgres is enabled, the document row is upserted and tied to the authenticated user (recent-docs limit, etc.).
-6. When Chroma is enabled, the backend **rebuilds** a per-document vector collection (chunked by page) with **`GoogleGenerativeAIEmbeddings`**.
-7. Backend returns JSON including **`page_count`**, **`full_document_context`**, optional **`document_id`**, **`chroma_indexed`**, and **`extracted_assets`**.
-8. Frontend stores the payload and enables the question workflow.
-
-### 5.2 Chat request flow
-
-1. User enters question.
-2. Frontend sends `POST /chat` with **Bearer token**, **`question`**, optional inline **`document_context`**, and optional **`document_id`** (to load context from Postgres when the preview session uses a stored doc).
-3. Backend selects **prompt context**: full `document_context` for short PDFs or “whole document” questions; otherwise **Chroma similarity search** over chunks (with a preamble so the model knows these are retrieved excerpts). Table-related heuristics in **`chains.py`** can still run against the **full** document text.
-4. Backend merges system + user prompt via **`chains.py`** (LCEL) and calls **`ChatGoogleGenerativeAI`**.
-5. Backend streams the final answer as **SSE** (`data: {"text":"..."}` then `[DONE]`).
-6. Frontend parses frames and updates the assistant message incrementally.
-7. Frontend extracts `[Page X]` references; citation chips jump the PDF viewer to the cited page.
-
----
-
-## 6. API Contracts
-
-Protected routes expect header: `Authorization: Bearer <token>` (from `POST /auth/register` or `POST /auth/login`).
-
-### `POST /upload`
-
-Input:
-- multipart form-data, field: `pdf`
-- `Authorization: Bearer ...`
-
-Output (shape):
-```json
-{
-  "document_id": 12,
-  "page_count": 8,
-  "full_document_context": "[Page 1] ...",
-  "extracted_assets": [],
-  "chroma_indexed": true
-}
+    PROMPT[Prompt + Heuristic hints] --> LLM{LLM Provider}
+    LLM -->|gemini| G[Gemini API]
+    LLM -->|ollama| O[Local Ollama]
+    G --> STREAM
+    O --> STREAM[SSE text stream]
+    STREAM --> UI[Chat UI + citation chips]
 ```
 
-`document_id` is null when Postgres is not configured. **`chroma_indexed`** is false if Chroma ingest failed or `USE_CHROMA` is off.
+### 1. PDF Extraction (Docling)
 
-### `POST /chat`
+The uploaded PDF bytes are written to a temp file and converted with IBM's **Docling** (`DocumentConverter`), which uses DocLayNet layout analysis and TableFormer for table structure. Each extracted element carries page provenance (`item.prov[0].page_no`), which is used to reassemble the canonical `[Page N]` blocks the rest of the system depends on:
 
-Input:
-```json
-{
-  "question": "What are key risk findings?",
-  "document_context": "[Page 1] ...",
-  "document_id": 12
-}
+```mermaid
+flowchart LR
+    PDF[PDF bytes] --> TMP[temp .pdf file]
+    TMP --> DOC[DocumentConverter.convert]
+    DOC --> E1[Element: text + page_no]
+    E1 --> GROUP[Group elements by page]
+    GROUP --> OUT["[Page 1] ...\n[Page 2] ..."]
 ```
 
-Either non-empty `document_context` or a `document_id` the current user owns is required.
+### 2. Retrieval (Hybrid: Dense + Sparse)
 
-Output:
-- content type: `text/event-stream`
-- stream emits JSON chunk payloads and `[DONE]`
+For long documents, only the most relevant chunks are injected into the prompt. AuditLens uses **Reciprocal Rank Fusion** via LangChain's `EnsembleRetriever`:
 
-Other routes: `GET /documents`, `GET /documents/{id}/chats` (when the database and LangChain history table are set up).
+- **Dense** — `BAAI/bge-large-en-v1.5` embeddings (local, L2-normalized) stored in a per-user/per-document **Chroma** collection.
+- **Sparse** — in-memory **BM25** index built from the same chunks, excellent at matching exact strings like `Section 4(b)(ii)` or defined terms.
 
----
+Weights default to `[0.6 dense, 0.4 sparse]`. A routing heuristic decides whether to use full-context stuffing or retrieval:
 
-## 7. Prompting and Response Constraints
+```mermaid
+flowchart TD
+    Q[Question] --> OPEN{Open-ended / whole-doc?}
+    OPEN -->|yes| FULL[Use full document context]
+    OPEN -->|no| SIZE{Context <= threshold?}
+    SIZE -->|yes| FULL
+    SIZE -->|no| HYBRID[Dense Chroma + BM25 fused via RRF]
+    HYBRID --> PROMPT
+    FULL --> PROMPT
+```
 
-Backend prompt logic currently enforces:
-- document-grounded responses
-- refusal of off-topic requests
-- no markdown emphasis spam
-- sparse and useful citations
-- fact-check behavior:
-  - factual statements should be grounded in provided context
-  - unsupported claims should be marked as not found in document
-- **Enumeration and counting**: questions such as “how many levels (or stages, steps, types, …) are there?” should receive the **count plus a brief description of each item** as given in the PDF, not only the number and one page reference, when the document defines each item.
+### 3. Answer Generation (LCEL chain + dual provider)
 
-The system prompt is defined in `backend/chains.py` and mirrored in `backend/main.py` (`build_auditor_system_prompt`) so chat and any legacy helpers stay aligned.
+The chain is built with LangChain Expression Language: `prompt_inputs → ChatPromptTemplate → LLM → StrOutputParser`. The LLM is constructed **per request** via a factory that reads the `provider` field sent by the frontend:
 
-**RAG:** When Chroma retrieval is used, the model is told the `<document_context>` block contains **similarity-ranked excerpts**, not necessarily the entire PDF.
+- `gemini` → `ChatGoogleGenerativeAI`
+- `ollama` → `ChatOllama` (reachability-probed lazily; missing daemon surfaces a clear chat error, never a silent fallback)
 
-Additional cleanup in stream layer:
-- strips star emphasis markers
-- reduces repeated identical page tags
+A **heuristic table-value hint** tool scans for `metric + year` patterns and injects a candidate numeric value so the model can verify cell lookups. After generation, a **completeness guardrail** detects truncated/dangling answers and triggers a one-shot repair pass.
 
----
+### 4. Streaming (SSE)
 
-## 8. Frontend UI Behavior
+The `/chat` route returns a `StreamingResponse` of `text/event-stream` frames shaped as `data: {"text":"..."}\n\n` terminated by `data: [DONE]`. The frontend `useChat` hook reads the stream with a `ReadableStream` reader, buffers partial frames, and updates the message incrementally. The SSE format is load-bearing — the hook depends on it exactly.
 
-Layout:
-- **Chat** column (left); **PDF preview** column (right, closable)
-- draggable vertical splitter between chat and PDF
+### Key algorithms used
 
-Pane controls:
-- `×` closes pane from top-right of pane header
-- closed pane can be reopened from chat header chips
-- vertical draggable splitters between panes
-- splitter shows tiny two-sided arrow hint and supports drag resizing
+- **RecursiveCharacterTextSplitter** for chunking before embedding (page-aware).
+- **Cosine similarity** over normalized BGE vectors (dense retrieval).
+- **BM25** term-frequency scoring (sparse retrieval).
+- **Reciprocal Rank Fusion** for merging dense + sparse rankings.
+- **PBKDF2-HMAC-SHA256** password hashing + **HMAC-signed** stateless Bearer tokens.
+- **Regex-based `[Page N]` parsing** for citation extraction on both client and server.
 
-Citation behavior:
-- in-message page references render as small clickable tags (e.g. `page2`)
-- tag click triggers PDF page jump
-- optional “Cited pages” button row below the transcript when citations are present
+## 🧰 Tech Stack
 
----
+| Layer | Technology |
+|---|---|
+| Frontend framework | React 18 + TypeScript + Vite |
+| UI components | shadcn/ui (Radix primitives) + Tailwind CSS |
+| PDF viewer | `@react-pdf-viewer/core` + `pdfjs-dist` |
+| Backend framework | FastAPI + Uvicorn (Python 3.11+) |
+| PDF extraction | Docling (DocLayNet + TableFormer) |
+| Embeddings | `BAAI/bge-large-en-v1.5` via `sentence-transformers` |
+| Vector store | Chroma (on-disk, per user+document collections) |
+| Sparse retrieval | `rank_bm25` + LangChain `EnsembleRetriever` |
+| LLM (cloud) | Google Gemini (`langchain-google-genai`) |
+| LLM (local) | Ollama (`langchain-ollama`) |
+| Orchestration | LangChain / LangChain Expression Language (LCEL) |
+| Database (optional) | PostgreSQL via `asyncpg` + `langchain-postgres` |
+| Streaming | Server-Sent Events (SSE) |
+| Auth | HMAC-signed Bearer tokens, PBKDF2 password hashing |
+| Containerization | Docker + Docker Compose |
 
-## 9. Data Shapes Used in Frontend
+## 🛠️ Setup & Installation
 
-Recent-document rows from `/documents`:
-- `id`, `created_at`, `pdf_filename`, `page_count`
+### Prerequisites
 
-Chat message state:
-- `role: "user" | "assistant"`
-- `content: string`
+- **Python 3.11+**
+- **Node.js 18+** and npm
+- A **Google Gemini API key** (get one from Google AI Studio)
+- **PostgreSQL** (optional — only needed for user/document/chat persistence). Without it the app runs statelessly.
+- **Ollama** (optional — only needed if you want the local-provider option). Install the native Windows build and run `ollama pull mistral`.
 
----
+### Backend setup
 
-## 10. Configuration and Environment
+```bash
+cd backend
+python -m venv venv
+# Windows (Git Bash / cmd)
+venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
 
-Backend env vars:
-- `GEMINI_API_KEY` — required for `/chat` and Chroma embeddings (Gemini via LangChain)
-- `GEMINI_MODEL` (default `gemini-1.5-flash`)
-- `GEMINI_EMBEDDING_MODEL` (default `gemini-embedding-001`) — used by Chroma ingest + retrieval
-- `MAX_PAGES` (default `10`)
-- `MAX_FULL_CONTEXT_CHARS` (default `30000`)
-- `USE_CHROMA` (default `true`) — set `false` to disable vector retrieval (always full-context prompting)
-- `CHROMA_PERSIST_DIRECTORY` — folder for Chroma SQLite index (default `backend/chroma_data`)
-- `RAG_TOP_K` (default `8`) — chunks retrieved per question when RAG applies
-- `RAG_FULL_CONTEXT_THRESHOLD` (default `14000`) — character count below which the full text is stuffed (no retrieval)
-- `DATABASE_URL` — optional Postgres URL for users, documents, chats, LangChain history
-- `AUTH_SECRET` — secret for signing auth tokens (change in production)
-- `LANGCHAIN_MESSAGE_HISTORY_TABLE` — optional table name override for Postgres chat history
+pip install -r requirements.txt
+```
 
-Frontend env var:
-- `VITE_API_BASE_URL` (optional; defaults to `http://localhost:8000`)
+Create `backend/.env` (see `.env details` below), then start the server:
 
----
+```bash
+uvicorn main:app --reload --port 8000
+```
 
-## 11. Error Handling Strategy
+The FastAPI app entry point is `backend/main.py`, which imports feature modules from `backend/app/`.
 
-Upload-side backend errors:
-- invalid type -> `400`
-- oversized PDF or page limit -> `413`
-- database not configured -> specific auth/upload routes may return `500` where persistence is mandatory
+### Frontend setup
 
-Chat-side:
-- LLM or SDK failures are caught and returned as normal SSE text starting with `[Server error]` (HTTP 200) when possible, so the UI stream completes instead of a bare 500
-- frontend surfaces errors in the chat panel and message list
+```bash
+cd frontend
+npm install
+npm run dev      # starts Vite dev server on http://localhost:5173
+```
 
-Frontend robustness:
-- aborts previous stream when sending a new question
-- handles malformed SSE frames defensively
+For a production build:
 
----
+```bash
+npm run build
+npm run preview
+```
 
-## 12. Build and Runtime Notes
+### Other setup (Docker, optional)
 
-Known non-fatal build warnings:
-- `pdfjs-dist` may emit eval warning in bundle logs
-- large chunk size warnings can appear due PDF worker + UI libraries
+A full stack (Postgres + backend + frontend) is defined in `docker-compose.yml`:
 
-These warnings do not block normal runtime behavior.
+```bash
+docker compose up --build
+```
 
----
+- Backend is served on port `8000`, frontend on port `3000`, Postgres on `5432`.
+- On the primary dev machine (Windows without WSL), native Python/Node is preferred over Docker — see AGENTS.md.
 
-## 13. Security and Safety Controls
+### `.env` details
 
-Current controls:
-- sanitize closing tag injection in document context
-- block instruction-following from document body (passive data rule)
-- vector embeddings stay on the **local Chroma** directory by default (no third-party vector SaaS)
+Create `backend/.env`:
 
-Potential hardening improvements:
-- server-side citation validator
-- structured claim extraction + per-claim support checks
-- stricter policy fallback on unsupported claims
+```env
+# Required — powers the Gemini LLM (always required, since Gemini is the default provider)
+GEMINI_API_KEY=your_google_ai_studio_key
+GEMINI_MODEL=gemini-1.5-flash
 
----
+# Required — secret used to sign Bearer auth tokens
+AUTH_SECRET=change-this-to-a-long-random-string
 
-## 14. Developer Onboarding Checklist
+# Optional — enables Postgres user/document/chat persistence + LangChain message history
+DATABASE_URL=postgresql://postgres:password1234@localhost:5432/PdfLens
 
-When joining this project, read in this order:
-1. `description.txt`
-2. `backend/main.py`
-3. `backend/chains.py`
-4. `backend/chroma_rag.py`
-5. `backend/retriever.py`
-6. `frontend/src/App.tsx`
-7. `frontend/src/hooks/useChat.ts`
-8. `frontend/vite.config.ts`
+# Optional — Ollama (local LLM provider)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=mistral
 
-Then verify:
-- upload works
-- chat stream works
-- citation click jumps page
-- pane close/reopen and resize works
+# Retrieval tuning
+USE_CHROMA=true
+CHROMA_PERSIST_DIRECTORY=backend/chroma_data
+RAG_TOP_K=8
+RAG_FULL_CONTEXT_THRESHOLD=14000
 
----
+# Upload limits
+MAX_PAGES=10
+MAX_FULL_CONTEXT_CHARS=30000
+```
 
-## 15. Future Improvement Roadmap
+Create `frontend/.env`:
 
-Practical next engineering steps:
-- add integration tests for upload + streaming chat contract
-- add visual regression tests for pane layout
-- split large frontend bundle via route/component-level code splitting
-- consolidate `build_auditor_system_prompt` into a single module to avoid drift between `main.py` and `chains.py`
-- add structured telemetry for extraction/response latency tracking
+```env
+VITE_API_BASE_URL=http://localhost:8000
+```
 
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `GEMINI_API_KEY` | Yes | — | Gemini LLM access |
+| `AUTH_SECRET` | Yes | `change-me-in-env` | Signs Bearer tokens |
+| `DATABASE_URL` | No | — | Postgres persistence (off if empty) |
+| `OLLAMA_BASE_URL` | No | `http://localhost:11434` | Local Ollama daemon |
+| `OLLAMA_MODEL` | No | `mistral` | Default Ollama model |
+| `USE_CHROMA` | No | `true` | Toggle RAG indexing |
+| `RAG_TOP_K` | No | `8` | Chunks retrieved per question |
+| `RAG_FULL_CONTEXT_THRESHOLD` | No | `14000` | Chars below which full context is used |
+| `MAX_PAGES` | No | `10` | Upload page cap |
+| `VITE_API_BASE_URL` | No | `http://localhost:8000` | Frontend → backend base URL |
+
+## 🔌 API Endpoints
+
+All protected routes require an `Authorization: Bearer <token>` header.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/auth/register` | No | Register with `{email, password}` → `{token, user_id, email}` |
+| `POST` | `/auth/login` | No | Login with `{email, password}` → `{token, user_id, email}` |
+| `POST` | `/upload` | Yes | Multipart PDF upload → `{document_id, page_count, full_document_context, extracted_assets, chroma_indexed}` |
+| `POST` | `/chat` | Yes | `{question, document_context|document_id, provider, model?}` → SSE stream of `data: {"text":"..."}` ending in `data: [DONE]` |
+| `GET` | `/documents` | Yes | Lists the user's recent documents (max 3) |
+| `GET` | `/documents/{document_id}/chats` | Yes | Lists chat history for a document session |
+
+## 📁 Project Structure
+
+```
+doc-counsel.ai/
+├── backend/
+│   ├── main.py                      # FastAPI app, all routes, prompt + table heuristics
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── app/
+│       ├── rag/
+│       │   ├── chains.py            # LCEL chain, system prompt, build_llm() provider factory
+│       │   ├── embeddings.py        # BGE local embedding loader
+│       │   ├── chroma_store.py      # Chroma ingest + retrieval, page-anchored chunks
+│       │   └── hybrid_retriever.py  # BM25 + EnsembleRetriever (RRF fusion)
+│       ├── documents/extraction/
+│       │   └── docling_extractor.py # PDF → [Page N] context via Docling
+│       ├── chat_history/
+│       │   └── database.py          # PostgresChatMessageHistory, session helpers
+│       ├── auth/
+│       └── core/
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.ts               # Vite + "@" → src/ alias
+│   ├── tailwind.config.js
+│   └── src/
+│       ├── App.tsx                  # Layout, auth, upload, chat, PDF viewer, citations
+│       ├── main.tsx
+│       ├── hooks/useChat.ts         # SSE stream consumer, sends provider per request
+│       ├── lib/utils.ts             # cn() Tailwind class merge
+│       └── components/ui/           # shadcn/ui primitives (button, input, badge, …)
+├── docker-compose.yml
+├── AGENTS.md
+└── README.md
+```
+
+## 📤 Exports
+
+AuditLens does not currently export generated artifacts to a downloadable file. The flows that *produce portable output* are:
+
+- **`/upload` response** returns `full_document_context` (the extracted, page-anchored text) and `extracted_assets` (detected tables) as JSON, so a client can save or post-process them externally.
+- **`/documents/{id}/chats`** returns prior Q&A pairs (with parsed `citation_pages`) as JSON, suitable for export to a spreadsheet or report.
+- **Chat answers** are streamed as SSE `{"text": "..."}` frames and accumulated by the frontend, so any answer can be copied directly from the UI.
+
+## 📄 License
+
+This project is currently **unlicensed** (no `LICENSE` file is present in the repository). All rights are reserved by the repository owner until a license is added. If you intend to use, fork, or distribute this code, please add an explicit open-source license (e.g. MIT or Apache-2.0) or contact the maintainer.
