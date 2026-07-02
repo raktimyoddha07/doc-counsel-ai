@@ -286,6 +286,7 @@ class ChatRequest(BaseModel):
     document_id: Optional[int] = None
     provider: str = "gemini"  # "gemini" (default) or "ollama"
     model: Optional[str] = None  # optional model name override
+    domain: Optional[str] = None  # optional domain override
 
 
 class UploadResponse(BaseModel):
@@ -294,6 +295,7 @@ class UploadResponse(BaseModel):
     full_document_context: str
     extracted_assets: List[Dict[str, object]] = []
     chroma_indexed: bool = False
+    domain: Optional[str] = None
 
 
 class AuthRequest(BaseModel):
@@ -1155,6 +1157,7 @@ async def init_postgres_if_configured() -> None:
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;")
         await conn.execute("ALTER TABLE chats ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;")
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS storage_path TEXT;")
+        await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS domain VARCHAR(50);")
 
 
 @app.on_event("startup")
@@ -1235,7 +1238,7 @@ async def list_documents(authorization: Optional[str] = Header(default=None, ali
         return []
     rows = await db_pool.fetch(
         """
-        SELECT id, created_at, pdf_filename, page_count
+        SELECT id, created_at, pdf_filename, page_count, domain
         FROM documents
         WHERE user_id = $1
         ORDER BY created_at DESC, id DESC
@@ -1251,6 +1254,7 @@ async def list_documents(authorization: Optional[str] = Header(default=None, ali
                 "created_at": str(r["created_at"]),
                 "pdf_filename": str(r["pdf_filename"] or ""),
                 "page_count": int(r["page_count"] or 0),
+                "domain": str(r["domain"] or "legal"),
             }
         )
     return out
@@ -1341,6 +1345,38 @@ async def get_document_pdf(
     )
 
 
+class UpdateDomainRequest(BaseModel):
+    domain: str
+
+
+@app.patch("/documents/{document_id}/domain")
+async def update_document_domain(
+    document_id: int,
+    req: UpdateDomainRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    claims = require_user_claims(authorization)
+    user_id = int(claims["uid"])
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+
+    from app.rag.domains import DOMAIN_REGISTRY
+    if req.domain not in DOMAIN_REGISTRY:
+        raise HTTPException(status_code=400, detail="Invalid domain ID.")
+
+    try:
+        await db_pool.execute(
+            "UPDATE documents SET domain = $1 WHERE id = $2 AND user_id = $3",
+            req.domain,
+            int(document_id),
+            int(user_id),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Database update failed: {exc}")
+
+    return {"success": True, "domain": req.domain}
+
+
 @app.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),
@@ -1405,6 +1441,7 @@ async def upsert_document(
     page_count: int,
     extracted_assets: Optional[List[Dict]] = None,
     storage_path: Optional[str] = None,
+    domain: Optional[str] = None,
 ) -> Optional[int]:
     """
     Stores the extracted document context so chat history can be linked later.
@@ -1423,13 +1460,13 @@ async def upsert_document(
         context_hash,
     )
     if doc_id is not None:
-        # Backfill storage_path on an existing row if a new one was provided
-        # (e.g. re-upload of identical content). Keeps the row's pointer current.
-        if storage_path:
+        # Backfill storage_path / domain on an existing row if provided
+        if storage_path or domain:
             try:
                 await db_pool.execute(
-                    "UPDATE documents SET storage_path = $1 WHERE id = $2 AND (storage_path IS NULL OR storage_path <> $1)",
+                    "UPDATE documents SET storage_path = COALESCE($1, storage_path), domain = COALESCE($2, domain) WHERE id = $3",
                     storage_path,
+                    domain,
                     int(doc_id),
                 )
             except Exception:
@@ -1446,9 +1483,10 @@ async def upsert_document(
             page_count,
             full_document_context,
             extracted_assets,
-            storage_path
+            storage_path,
+            domain
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
         ON CONFLICT (user_id, document_context_hash) DO NOTHING
         """,
         int(user_id),
@@ -1459,6 +1497,7 @@ async def upsert_document(
         document_context,
         assets_json,
         storage_path,
+        domain,
     )
 
     doc_id = await db_pool.fetchval(
@@ -1604,6 +1643,9 @@ async def upload(
         max_full_context_chars=MAX_FULL_CONTEXT_CHARS,
     )
 
+    from app.rag.domains import auto_detect_document_domain
+    domain = await auto_detect_document_domain(full_document_context)
+
     stored_document_id: Optional[int] = None
     storage_path: Optional[str] = None
     # Best-effort persistence (no-op if DB not configured).
@@ -1615,6 +1657,7 @@ async def upload(
             document_context=full_document_context,
             page_count=page_count,
             extracted_assets=extracted_assets,
+            domain=domain,
         )
         await prune_old_documents_for_user(user_id=user_id, keep_latest=3)
     except Exception:
@@ -1669,88 +1712,8 @@ async def upload(
         full_document_context=full_document_context,
         extracted_assets=extracted_assets,
         chroma_indexed=chroma_indexed,
+        domain=domain,
     )
-
-
-def build_chat_prompt(
-    document_context: str,
-    question: str,
-    recent_chat_context: str = "",
-) -> Tuple[str, str]:
-    # System prompt covers persona + refusal behavior.
-    system_prompt = build_auditor_system_prompt()
-    sanitized = sanitize_document_context(document_context)
-
-    hint = heuristic_table_value_hint(document_context, question)
-    table_digest = build_table_digest(document_context)
-
-    user_prompt = (
-        "Below is the document text in <document_context> tags.\n"
-        + f"<document_context>\n{sanitized}\n</document_context>\n\n"
-        + (f"Recent chat context within the same PDF session (passive):\n{recent_chat_context}\n\n" if recent_chat_context else "")
-        + (f"{hint}\n\n" if hint else "")
-        + (f"{table_digest}\n\n" if table_digest else "")
-        + f"User question:\n{question}\n"
-    )
-    return system_prompt, user_prompt
-
-
-def iter_gemini_text_stream(system_prompt: str, user_prompt: str):
-    # Iterator of text fragments.
-    # Notes:
-    # - This implementation is best-effort and depends on google-generativeai streaming behavior.
-    if not GEMINI_API_KEY:
-        # No streaming LLM available; yield a helpful error as SSE text.
-        yield f"[Server error] GEMINI_API_KEY not configured. Set env var GEMINI_API_KEY."
-        return
-
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
-
-    collected_chunks: List[str] = []
-    try:
-        # google-generativeai supports streaming by iterating over response when stream=True.
-        resp = model.generate_content(user_prompt, stream=True)
-        for chunk in resp:
-            txt = getattr(chunk, "text", None)
-            if isinstance(txt, str) and txt:
-                # Light cleanup for UI readability.
-                cleaned = txt.replace("**", "").replace("*", "")
-                # Collapse adjacent duplicate citations if they appear in same chunk.
-                cleaned = re.sub(r"(\[Page\s+\d+\])(?:\s*\1)+", r"\1", cleaned)
-                collected_chunks.append(cleaned)
-                yield cleaned
-    except Exception:
-        # Fall through to non-stream fallback below.
-        pass
-
-    # Guardrail: prevent trailing dangling-colon endings in final assistant output.
-    final_text = "".join(collected_chunks).strip()
-    mcq_like = bool(re.search(r"\bmcq\b|\bmultiple[- ]choice\b", user_prompt, flags=re.I))
-
-    if looks_incomplete_answer(final_text) and not mcq_like:
-        try:
-            # Repair pass: ask model for one complete grounded answer.
-            repair_prompt = (
-                user_prompt
-                + "\nReturn one complete final answer now. "
-                + "If exact value is unavailable, explicitly say it is not found in the provided document."
-            )
-            repair_resp = model.generate_content(repair_prompt, stream=False)
-            repaired = (getattr(repair_resp, "text", "") or "").replace("**", "").replace("*", "").strip()
-            repaired = re.sub(r"(\[Page\s+\d+\])(?:\s*\1)+", r"\1", repaired)
-            if repaired:
-                if final_text:
-                    yield "\n" + repaired
-                else:
-                    yield repaired
-                final_text = (final_text + " " + repaired).strip()
-        except Exception:
-            pass
-
-    if looks_incomplete_answer(final_text) and not mcq_like:
-        # Add a newline so it doesn't glue to the previous token.
-        yield "\nThe exact value is not found in the provided document. Please verify the table row/column labels."
 
 
 @app.post("/chat")
@@ -1824,8 +1787,11 @@ async def chat(
 
     if q_l in {"who are you", "who are you?", "what are you", "what are you?"}:
         assistant_answer = (
-            "I am AuditLens, a document-grounded audit assistant. "
-            "I answer using the uploaded PDF context and cite pages when evidence is present."
+            "I am DocCounsel AI, a document-grounded assistant specialised across 10 document domains: "
+            "Legal/Contracts, Accounting/Finance, Resumes/CVs, Research Papers, Medical/Clinical, "
+            "Insurance Policies, Technical/Engineering Specs, HR Policies, Government/Regulatory Filings, and Patents/IP. "
+            "My domain is auto-detected when you upload a PDF and can be overridden via the Domain selector. "
+            "I cite the exact pages when evidence is present."
         )
         return StreamingResponse(
             event_stream_for(assistant_answer),
@@ -1859,6 +1825,21 @@ async def chat(
             media_type="text/event-stream",
         )
 
+    domain_id = req.domain
+    if not domain_id and resolved_document_id is not None and db_pool is not None:
+        try:
+            row = await db_pool.fetchrow(
+                "SELECT domain FROM documents WHERE id = $1 AND user_id = $2",
+                int(resolved_document_id),
+                int(user_id),
+            )
+            if row and row["domain"]:
+                domain_id = str(row["domain"])
+        except Exception:
+            pass
+    if not domain_id:
+        domain_id = "legal"
+
     ctx_for_llm, ctx_for_heuristics = await resolve_document_contexts_for_llm(
         user_id=user_id,
         resolved_document_id=resolved_document_id,
@@ -1873,6 +1854,7 @@ async def chat(
             document_context=ctx_for_llm,
             recent_chat_context=recent_chat_context,
             full_document_context_for_heuristics=ctx_for_heuristics,
+            domain_id=domain_id,
         )
     except Exception as exc:
         assistant_answer = format_llm_failure_user_message(exc)

@@ -16,6 +16,7 @@ type SendChatArgs = {
   provider?: "gemini" | "ollama";
   /** Optional model name override (e.g. "mistral", "llama3"). */
   model?: string;
+  domain?: string;
 };
 
 type UseChatReturn = {
@@ -52,7 +53,7 @@ export function useChat(params: UseChatParams = {}): UseChatReturn {
   }, []);
 
   const sendChat = useCallback(
-    async ({ question, token, documentContext, documentId, provider, model }: SendChatArgs) => {
+    async ({ question, token, documentContext, documentId, provider, model, domain }: SendChatArgs) => {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -74,6 +75,7 @@ export function useChat(params: UseChatParams = {}): UseChatReturn {
             document_id: typeof documentId === "number" ? documentId : null,
             provider: provider ?? "gemini",
             ...(model ? { model } : {}),
+            domain: domain ?? null,
           }),
           signal: ac.signal,
         });

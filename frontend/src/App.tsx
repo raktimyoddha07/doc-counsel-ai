@@ -37,7 +37,7 @@ export default function App() {
     return Number.isFinite(n) ? n : null;
   });
   const [recentDocuments, setRecentDocuments] = useState<
-    Array<{ id: number; created_at: string; pdf_filename: string; page_count: number }>
+    Array<{ id: number; created_at: string; pdf_filename: string; page_count: number; domain?: string }>
   >([]);
   const [docsLoading, setDocsLoading] = useState(false);
   const userHasResizedRef = useRef(false);
@@ -57,6 +57,24 @@ export default function App() {
   const [provider, setProvider] = useState<"ollama" | "gemini">(
     () => (localStorage.getItem("auditlens_provider") as "ollama" | "gemini") || "ollama",
   );
+
+  // Domain picker — auto-detected on upload, can be overridden manually.
+  const [activeDomain, setActiveDomain] = useState<string>(
+    () => localStorage.getItem("auditlens_domain") || "legal",
+  );
+
+  const DOMAIN_LABELS: Record<string, string> = {
+    legal: "Legal / Contracts",
+    accounting: "Accounting / Finance",
+    resume: "Resumes / CVs",
+    research: "Research Papers",
+    medical: "Medical / Clinical",
+    insurance: "Insurance Policies",
+    technical: "Technical / Engineering",
+    hr: "HR Policies",
+    government: "Government / Regulatory",
+    patents: "Patents / IP",
+  };
 
   const { isStreaming, error: chatError, assistantText, sendChat } = useChat({
     apiBaseUrl,
@@ -126,6 +144,28 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("auditlens_provider", provider);
   }, [provider]);
+
+  useEffect(() => {
+    localStorage.setItem("auditlens_domain", activeDomain);
+  }, [activeDomain]);
+
+  async function handleDomainChange(newDomain: string) {
+    setActiveDomain(newDomain);
+    if (currentDocumentId !== null && authToken) {
+      try {
+        await fetch(`${apiBaseUrl}/documents/${currentDocumentId}/domain`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ domain: newDomain }),
+        });
+      } catch {
+        // best-effort — domain is still updated locally
+      }
+    }
+  }
 
   useEffect(() => {
     if (!dragging) return;
@@ -272,7 +312,10 @@ export default function App() {
     setDocumentContext("");
     setViewerPageIndex(0);
     const doc = recentDocuments.find((d) => d.id === documentId);
-    if (doc) setPageCount(doc.page_count ?? 0);
+    if (doc) {
+      setPageCount(doc.page_count ?? 0);
+      if (doc.domain) setActiveDomain(doc.domain);
+    }
     setStreamingAssistantIndex(null);
 
     // Restore the original PDF from per-user object storage so the viewer
@@ -347,17 +390,22 @@ export default function App() {
         document_id?: number;
         page_count: number;
         full_document_context: string;
+        domain?: string;
       };
 
       setCurrentDocumentId(typeof data.document_id === "number" ? data.document_id : null);
       setPageCount(data.page_count ?? 0);
       setDocumentContext(data.full_document_context ?? "");
+      if (data.domain) {
+        setActiveDomain(data.domain);
+      }
       await loadRecentDocuments();
 
+      const detectedLabel = data.domain ? (DOMAIN_LABELS[data.domain] ?? data.domain) : "Legal / Contracts";
       setMessages([
         {
           role: "assistant",
-          content: "PDF uploaded. Ask an audit/compliance question and I will cite the exact pages.",
+          content: `PDF uploaded. Detected document type: ${detectedLabel}. Ask a question and I will cite the exact pages.`,
         },
       ]);
       setStreamingAssistantIndex(null);
@@ -389,6 +437,7 @@ export default function App() {
         documentContext: documentContext.trim() ? documentContext : undefined,
         documentId: currentDocumentId,
         provider,
+        domain: activeDomain,
       });
       setMessages((prev) =>
         prev.map((m, idx) => (idx === assistantIdx ? { ...m, content: finalText } : m)),
@@ -730,6 +779,18 @@ export default function App() {
               {provider === "ollama" ? (
                 <span className="text-[11px] text-amber-400/80">running locally, may be slower</span>
               ) : null}
+              <span className="text-xs text-slate-400">Domain</span>
+              <select
+                value={activeDomain}
+                onChange={(e) => handleDomainChange(e.target.value)}
+                disabled={isStreaming}
+                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none transition-colors hover:border-slate-600 focus:border-sky-500 disabled:opacity-50"
+                title="Document domain — auto-detected on upload, can be overridden"
+              >
+                {Object.entries(DOMAIN_LABELS).map(([id, label]) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
+              </select>
               <div className="ml-auto flex items-center gap-2">
               {micSupported ? (
                 <Button
