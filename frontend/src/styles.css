@@ -58,3 +58,126 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ----- Markdown rendering for assistant chat messages ----- */
+.markdown-body {
+  font-size: 0.875rem;
+  line-height: 1.7;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+.markdown-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p {
+  margin: 0.5rem 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1rem 0 0.5rem;
+  color: #f1f5f9;
+}
+.markdown-body h1 { font-size: 1.15rem; }
+.markdown-body h2 { font-size: 1.05rem; }
+.markdown-body h3 { font-size: 0.98rem; }
+.markdown-body h4 { font-size: 0.92rem; }
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.5rem 0;
+  padding-left: 1.4rem;
+}
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
+
+.markdown-body li {
+  margin: 0.2rem 0;
+}
+.markdown-body li::marker {
+  color: #94a3b8;
+}
+
+.markdown-body blockquote {
+  margin: 0.5rem 0;
+  padding: 0.25rem 0.85rem;
+  border-left: 3px solid #38bdf8;
+  background: rgba(56, 189, 248, 0.06);
+  color: #cbd5e1;
+  border-radius: 0 4px 4px 0;
+}
+
+.markdown-body code {
+  font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  font-size: 0.82em;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
+}
+
+.markdown-body pre {
+  margin: 0.5rem 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 6px;
+  background: #0b1120;
+  border: 1px solid #1e293b;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.8em;
+}
+
+.markdown-body a {
+  color: #38bdf8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body a:hover {
+  color: #7dd3fc;
+}
+
+.markdown-body hr {
+  margin: 0.9rem 0;
+  border: 0;
+  border-top: 1px solid #1e293b;
+}
+
+.markdown-body strong {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+/* ----- react-pdf-viewer fixes: it requires explicit height + theme overrides ----- */
+.rpv-core__viewer {
+  min-height: 0;
+}
+
+.rpv-core__viewer[data-testid="core__viewer"] {
+  /* Ensure the inner scroll area can actually scroll the document */
+  height: 100%;
+}
+
+.rpv-core__page-layer {
+  background: transparent !important;
+}
+
+/* Make the pdf viewer toolbar/scrollbar blend with the dark theme */
+.rpv-core__inner-pages {
+  background: #0f172a !important;
+}
+
+.rpv-core__inner-page {
+  margin: 0 auto 0.75rem !important;
+}

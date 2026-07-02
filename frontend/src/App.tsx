@@ -1,12 +1,11 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Viewer, Worker } from "@react-pdf-viewer/core";
-import "@react-pdf-viewer/core/lib/styles/index.css";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { MarkdownContent } from "@/components/MarkdownContent";
+import { PdfViewerPanel } from "@/components/PdfViewerPanel";
 
 import { useChat } from "./hooks/useChat";
 import { useVoiceRecorder } from "./hooks/useVoiceRecorder";
@@ -102,6 +101,14 @@ export default function App() {
   const [showPdfSplitterHover, setShowPdfSplitterHover] = useState(false);
 
   const [openMenuDocId, setOpenMenuDocId] = useState<number | null>(null);
+  const [sessionsExpanded, setSessionsExpanded] = useState(false);
+  // Bumped each time the user clicks a citation to trigger a page scroll in the viewer.
+  const [jumpToPageSignal, setJumpToPageSignal] = useState<{ page: number; nonce: number } | undefined>(undefined);
+
+  const triggerJump = (page1Based: number) => {
+    setViewerPageIndex(Math.max(0, page1Based - 1));
+    setJumpToPageSignal({ page: page1Based, nonce: Date.now() });
+  };
 
   useEffect(() => {
     const handleOutsideClick = () => setOpenMenuDocId(null);
@@ -535,86 +542,6 @@ export default function App() {
     }
   }
 
-  const onJumpToPage = (page1Based: number) => {
-    setViewerPageIndex(Math.max(0, page1Based - 1));
-  };
-
-  const renderMessageWithCitations = (content: string) => {
-    const regex = /(\[Page\s+\d+\])/g;
-    const segments = content.split(regex);
-    return segments.map((part, idx) => {
-      const match = /^\[Page\s+(\d+)\]$/.exec(part.trim());
-      if (!match) {
-        return <Fragment key={`txt-${idx}`}>{part}</Fragment>;
-      }
-      const page = Number(match[1]);
-      return (
-        <Badge
-          key={`cite-${idx}-${page}`}
-          onClick={() => onJumpToPage(page)}
-          title={`Jump to page ${page}`}
-          className="mx-0.5 inline-flex h-3 cursor-pointer items-center rounded-full border border-sky-500/40 bg-sky-500/15 px-1 text-[8px] font-semibold leading-none text-sky-300 hover:bg-sky-500/25"
-        >
-          page{page}
-        </Badge>
-      );
-    });
-  };
-
-  const formatAssistantMessage = (content: string) => {
-    let formatted = content.replace(/\r\n/g, "\n");
-    formatted = formatted.replace(/[ \t]+\n/g, "\n");
-    formatted = formatted.replace(/ {2,}/g, " ");
-    formatted = formatted.replace(/\n{3,}/g, "\n\n");
-
-    const rawLines = formatted.split("\n").map((l) => l.replace(/[ \t]+$/g, ""));
-
-    const isEmpty = (s: string) => !s.trim();
-    const isOptionLine = (s: string) => /^[A-D][\)\.]\s+/.test(s.trimStart());
-    const isBulletLine = (s: string) => /^[-*]\s+/.test(s.trimStart());
-    const isNumberedLine = (s: string) => /^\d+[\.\)]\s+/.test(s.trimStart());
-
-    const outLines: string[] = [];
-    let prevWasListItem = false;
-
-    for (const line of rawLines) {
-      if (isEmpty(line)) {
-        if (outLines.length && outLines[outLines.length - 1] !== "") outLines.push("");
-        prevWasListItem = false;
-        continue;
-      }
-
-      const trimmed = line.trim();
-      const option = isOptionLine(trimmed);
-      const bullet = isBulletLine(trimmed);
-      const numbered = isNumberedLine(trimmed);
-      const isListItem = option || bullet || numbered;
-
-      if (isListItem) {
-        if (
-          outLines.length &&
-          outLines[outLines.length - 1] !== "" &&
-          !prevWasListItem
-        ) {
-          outLines.push("");
-        }
-        const leftTrimmed = trimmed.trimStart();
-        outLines.push(`  ${leftTrimmed}`);
-        prevWasListItem = true;
-      } else {
-        outLines.push(trimmed);
-        prevWasListItem = false;
-      }
-    }
-
-    const joined = outLines.join("\n").trim();
-    const fixed = joined.replace(
-      /(Answer:\s*[^\n]*)(\n)(?=\d+[\.\)]\s+)/gim,
-      "$1\n\n"
-    );
-    return fixed;
-  };
-
   if (!authToken) {
     return (
       <div className="flex h-full w-full items-center justify-center p-4">
@@ -670,62 +597,109 @@ export default function App() {
           style={chatPaneStyle}
         >
           <div className="border-b border-slate-800 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-base font-bold">AuditLens</span>
-              <div className="flex items-center gap-1.5">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-base font-bold tracking-tight">DocCounsel</span>
                 {pageCount > 0 ? (
                   <Badge variant="outline" className="border-sky-500/40 text-sky-300">
                     {pageCount} pages
                   </Badge>
                 ) : null}
-                <Badge variant="outline">{authEmail || "User"}</Badge>
-                <Badge variant="outline" className="cursor-pointer hover:bg-accent" onClick={handleLogout}>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 py-1 pl-1 pr-3 transition-colors hover:border-slate-600">
+                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-sky-500 to-indigo-500 text-xs font-bold uppercase text-white">
+                    {(authEmail || "U").charAt(0)}
+                  </span>
+                  <span
+                    className="max-w-[140px] truncate text-xs font-medium text-slate-200"
+                    title={authEmail || "User"}
+                  >
+                    {authEmail || "User"}
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleLogout}
+                  className="h-9 gap-1.5 rounded-full border-slate-700 bg-transparent px-3 text-xs font-medium text-slate-300 transition-colors hover:border-red-500/50 hover:bg-red-500/10 hover:text-red-300"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
                   Logout
-                </Badge>
+                </Button>
               </div>
             </div>
             {authToken ? (
               <div className="mb-2">
-                <span className="mb-1 block text-xs text-muted-foreground">
-                  Recent PDFs (latest 3)
-                </span>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                    Sessions
+                  </span>
+                  {recentDocuments.length > 0 ? (
+                    <button
+                      onClick={() => setSessionsExpanded((v) => !v)}
+                      className="text-[11px] text-slate-400 transition-colors hover:text-sky-300"
+                    >
+                      {sessionsExpanded ? "Hide" : `Show all (${recentDocuments.length})`}
+                    </button>
+                  ) : null}
+                </div>
                 {docsLoading ? (
-                  <span className="text-xs text-muted-foreground">Loading...</span>
+                  <span className="text-xs text-muted-foreground">Loading sessions…</span>
                 ) : null}
-                <div className="flex flex-wrap gap-1.5">
+                <div
+                  className={
+                    "flex gap-2 overflow-hidden " +
+                    (sessionsExpanded ? "flex-wrap" : "flex-nowrap overflow-x-auto chat-scrollbar")
+                  }
+                >
                   {recentDocuments.map((d) => {
                     const active = d.id === currentDocumentId;
                     const label = d.pdf_filename ? d.pdf_filename : `Document ${d.id}`;
                     return (
-                      <div key={d.id} className="relative flex items-center">
-                        <Badge
-                          variant={active ? "default" : "outline"}
-                          className="cursor-pointer pr-6 select-none"
-                          onClick={() => loadDocumentChats(d.id)}
-                        >
-                          {label.length > 12 ? label.slice(0, 12) + "…" : label}
-                        </Badge>
+                      <div
+                        key={d.id}
+                        className={
+                          "group relative flex flex-shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 transition-all cursor-pointer " +
+                          (active
+                            ? "border-sky-500/60 bg-sky-500/15 "
+                            : "border-slate-700/70 bg-slate-800/40 hover:border-slate-600 hover:bg-slate-800")
+                        }
+                        onClick={() => loadDocumentChats(d.id)}
+                        title={label}
+                      >
+                        <span className="text-sky-400/80 text-xs">📄</span>
+                        <span className="max-w-[120px] truncate text-xs text-slate-200 select-none">
+                          {label}
+                        </span>
+                        {d.page_count ? (
+                          <span className="text-[10px] text-slate-500">{d.page_count}p</span>
+                        ) : null}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             setOpenMenuDocId(openMenuDocId === d.id ? null : d.id);
                           }}
-                          className="absolute right-1 text-slate-400 hover:text-white p-0.5 rounded text-xs leading-none focus:outline-none"
+                          className="text-slate-500 opacity-0 transition-opacity hover:text-white group-hover:opacity-100 p-0.5 text-xs leading-none focus:outline-none"
                           title="Options"
                         >
                           ⋮
                         </button>
                         {openMenuDocId === d.id && (
-                          <div className="absolute top-full left-0 z-50 mt-1 min-w-[80px] rounded-md border border-slate-800 bg-slate-950 p-1 shadow-lg">
+                          <div className="absolute top-full right-0 z-50 mt-1 min-w-[90px] rounded-md border border-slate-700 bg-slate-950 p-1 shadow-xl">
                             <button
                               onClick={async (e) => {
                                 e.stopPropagation();
                                 setOpenMenuDocId(null);
-                                if (window.confirm(`Are you sure you want to delete "${label}"? This will delete the document context and all associated conversations.`)) {
+                                if (window.confirm(`Delete "${label}"? This removes the document and all its conversations.`)) {
                                   await handleDeleteDocument(d.id);
                                 }
                               }}
-                              className="w-full text-left rounded px-2 py-1 text-xs text-red-400 hover:bg-slate-900 transition-colors"
+                              className="w-full text-left rounded px-2 py-1 text-xs text-red-400 hover:bg-red-500/15 transition-colors"
                             >
                               Delete
                             </button>
@@ -736,7 +710,7 @@ export default function App() {
                   })}
                   {recentDocuments.length === 0 && !docsLoading ? (
                     <span className="text-xs text-muted-foreground">
-                      Upload a PDF to start a session.
+                      Upload a PDF to start your first session.
                     </span>
                   ) : null}
                 </div>
@@ -802,11 +776,9 @@ export default function App() {
                   }
                 >
                   {m.role === "user"
-                    ? m.content
+                    ? <div className="[overflow-wrap:anywhere] whitespace-pre-wrap">{m.content}</div>
                     : (
-                      <div className="[overflow-wrap:anywhere] [line-height:1.7] whitespace-pre-wrap">
-                        {renderMessageWithCitations(formatAssistantMessage(m.content))}
-                      </div>
+                      <MarkdownContent content={m.content} onCitationClick={triggerJump} />
                     )}
                 </div>
               </div>
@@ -824,7 +796,7 @@ export default function App() {
                 {citationPages.map((p) => (
                   <button
                     key={p}
-                    onClick={() => onJumpToPage(p)}
+                    onClick={() => triggerJump(p)}
                     className="inline-flex size-8 items-center justify-center rounded-full border border-sky-500/45 bg-sky-500/12 text-xs font-semibold text-sky-300 shadow-sm transition-all hover:scale-105 hover:bg-sky-500/25"
                   >
                     {p}
@@ -924,31 +896,15 @@ export default function App() {
 
         {showPdfPane ? (
           <div
-            className="min-h-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/80 p-4"
+            className="min-h-0 overflow-hidden"
             style={{ width: pdfPaneWidth, minWidth: PDF_PANE_MIN, maxWidth: "100%", flexShrink: 0 }}
           >
-            <div className="mb-3 flex min-h-[2rem] items-center justify-between">
-              <span className="text-base font-bold">Document Preview</span>
-              <Button size="sm" variant="ghost" onClick={() => setShowPdfPane(false)} title="Close PDF">
-                ×
-              </Button>
-            </div>
-            <div className="h-[calc(100%-2rem)] min-h-0 overflow-hidden rounded-lg border border-slate-800 bg-slate-950/70 p-1">
-              <Worker workerUrl={pdfWorkerUrl}>
-                {pdfFileUrl ? (
-                  <Viewer
-                    key={`${pdfFileUrl}-${viewerPageIndex}`}
-                    fileUrl={pdfFileUrl}
-                    initialPage={viewerPageIndex}
-                    defaultScale={1}
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-slate-400">
-                    Upload a PDF to preview it here.
-                  </div>
-                )}
-              </Worker>
-            </div>
+            <PdfViewerPanel
+              fileUrl={pdfFileUrl}
+              initialPage={viewerPageIndex}
+              jumpToPageSignal={jumpToPageSignal?.page}
+              onClose={() => setShowPdfPane(false)}
+            />
           </div>
         ) : null}
       </div>
