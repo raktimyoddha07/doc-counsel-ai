@@ -267,7 +267,7 @@ VITE_API_BASE_URL=http://localhost:8000
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `GEMINI_API_KEY` | Yes | — | Gemini LLM access |
+| `GEMINI_API_KEY` | No | — | Gemini LLM access |
 | `AUTH_SECRET` | Yes | `change-me-in-env` | Signs Bearer tokens |
 | `DATABASE_URL` | No | — | Postgres persistence (off if empty) |
 | `OLLAMA_BASE_URL` | No | `http://localhost:11434` | Local Ollama daemon |
@@ -290,12 +290,35 @@ All protected routes require an `Authorization: Bearer <token>` header.
 |---|---|---|---|
 | `POST` | `/auth/register` | No | Register with `{email, password}` → `{token, user_id, email}` |
 | `POST` | `/auth/login` | No | Login with `{email, password}` → `{token, user_id, email}` |
-| `POST` | `/upload` | Yes | Multipart PDF upload → `{document_id, page_count, full_document_context, extracted_assets, chroma_indexed}`. Also persists the original PDF to `uploads/<user_id>/`. |
-| `POST` | `/chat` | Yes | `{question, document_context|document_id, provider, model?}` → SSE stream of `data: {"text":"..."}` ending in `data: [DONE]` |
+| `POST` | `/upload` | Yes | Multipart PDF upload → `{document_id, page_count, full_document_context, extracted_assets, chroma_indexed, domain}`. Also persists the original PDF to `uploads/<user_id>/` and auto-detects the domain. |
+| `POST` | `/chat` | Yes | `{question, document_context|document_id, provider, model?, domain?}` → SSE stream of `data: {"text":"..."}` ending in `data: [DONE]` utilizing domain-specific persona/hints. |
 | `POST` | `/transcribe` | Yes | Multipart audio (webm/opus) → `{text: "..."}` via faster-whisper (CPU) |
-| `GET` | `/documents` | Yes | Lists the user's recent documents (max 3) |
+| `GET` | `/documents` | Yes | Lists the user's recent documents (max 3) containing active domains |
 | `GET` | `/documents/{document_id}/pdf` | Yes | Streams the stored original PDF (ownership-enforced) |
 | `GET` | `/documents/{document_id}/chats` | Yes | Lists chat history for a document session |
+| `PATCH` | `/documents/{document_id}/domain` | Yes | Updates a document's domain override with `{domain}` |
+| `DELETE` | `/documents/{document_id}` | Yes | Deletes the document, its conversations, disk file, and Chroma index |
+
+## 🏷️ Multi-Domain Specialization
+
+Doc Counsel AI specializes across 10 document domains instead of utilizing a single hardcoded persona:
+1. **Legal / Contracts** — Strict, terse lead auditor focus on clauses, sections, and rights.
+2. **Accounting / Financial Statements** — Precise analyst for metric comparisons, table refs, and unit normalization.
+3. **Resumes / CVs** — Neutral evaluator focusing on skill extraction, experience, and timeline gaps.
+4. **Research Papers** — Academic persona with appropriate hedging, section-type awareness, and references.
+5. **Medical / Clinical** — Highly cautious (**strict** guardrail tier) using explicit disclaimers and dosage precision.
+6. **Insurance Policies** — Coverage-focused, matching exclusions and premium details.
+7. **Technical / Engineering Specs** — Spec-literal, focusing on tolerances and engineering revisions.
+8. **HR Policies / Handbooks** — Neutral policy advisor adhering strictly to rule exceptions and benefits.
+9. **Government / Regulatory Filings** — Compliance-focused parser for structured form fields.
+10. **Patents / IP Filings** — Formal parsing of independent/dependent claims and prior-art patent citation formats.
+
+### Domain Identification Flow
+- **Tier 1 — Free Heuristics:** On PDF upload, a cheap keyword/regex scorer scans the first ~1–2 pages. If a domain scores clearly highest (score >= 3, gap >= 2), it is set immediately.
+- **Tier 2 — Cheap LLM Call:** If Tier 1 is ambiguous, a single cheap LLM classification call (using `gemini-1.5-flash` or local Ollama) runs on a short excerpt.
+- **Manual Override:** Users can correct any classification using the top-right **Domain** selector, which persists the updated domain via `PATCH`.
+
+
 
 ## 📁 Project Structure
 

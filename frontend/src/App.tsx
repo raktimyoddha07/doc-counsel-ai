@@ -101,6 +101,14 @@ export default function App() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [showPdfSplitterHover, setShowPdfSplitterHover] = useState(false);
 
+  const [openMenuDocId, setOpenMenuDocId] = useState<number | null>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = () => setOpenMenuDocId(null);
+    window.addEventListener("click", handleOutsideClick);
+    return () => window.removeEventListener("click", handleOutsideClick);
+  }, []);
+
   const draggingRef = useRef(dragging);
   useEffect(() => {
     draggingRef.current = dragging;
@@ -164,6 +172,36 @@ export default function App() {
       } catch {
         // best-effort — domain is still updated locally
       }
+    }
+  }
+
+  async function handleDeleteDocument(documentId: number) {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/documents/${documentId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        if (currentDocumentId === documentId) {
+          setCurrentDocumentId(null);
+          setPdfFileUrl(null);
+          setPageCount(0);
+          setDocumentContext("");
+          setMessages([
+            {
+              role: "assistant",
+              content: "Session cleared. Upload a PDF or select an existing one to start chatting.",
+            },
+          ]);
+        }
+        setRecentDocuments((prev) => prev.filter((d) => d.id !== documentId));
+      } else {
+        const msg = await res.text().catch(() => "");
+        alert(`Delete failed: ${msg}`);
+      }
+    } catch (e: any) {
+      alert(`Error deleting document: ${e?.message ?? String(e)}`);
     }
   }
 
@@ -659,14 +697,41 @@ export default function App() {
                     const active = d.id === currentDocumentId;
                     const label = d.pdf_filename ? d.pdf_filename : `Document ${d.id}`;
                     return (
-                      <Badge
-                        key={d.id}
-                        variant={active ? "default" : "outline"}
-                        className="cursor-pointer"
-                        onClick={() => loadDocumentChats(d.id)}
-                      >
-                        {label.length > 18 ? label.slice(0, 18) + "…" : label}
-                      </Badge>
+                      <div key={d.id} className="relative flex items-center">
+                        <Badge
+                          variant={active ? "default" : "outline"}
+                          className="cursor-pointer pr-6 select-none"
+                          onClick={() => loadDocumentChats(d.id)}
+                        >
+                          {label.length > 12 ? label.slice(0, 12) + "…" : label}
+                        </Badge>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenMenuDocId(openMenuDocId === d.id ? null : d.id);
+                          }}
+                          className="absolute right-1 text-slate-400 hover:text-white p-0.5 rounded text-xs leading-none focus:outline-none"
+                          title="Options"
+                        >
+                          ⋮
+                        </button>
+                        {openMenuDocId === d.id && (
+                          <div className="absolute top-full left-0 z-50 mt-1 min-w-[80px] rounded-md border border-slate-800 bg-slate-950 p-1 shadow-lg">
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                setOpenMenuDocId(null);
+                                if (window.confirm(`Are you sure you want to delete "${label}"? This will delete the document context and all associated conversations.`)) {
+                                  await handleDeleteDocument(d.id);
+                                }
+                              }}
+                              className="w-full text-left rounded px-2 py-1 text-xs text-red-400 hover:bg-slate-900 transition-colors"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                   {recentDocuments.length === 0 && !docsLoading ? (
@@ -704,8 +769,22 @@ export default function App() {
                 }}
               />
               <span className="text-xs text-muted-foreground">
-                {uploading ? "Extracting document..." : "Ready"}
+                {uploading ? "Extracting & detecting domain..." : "Ready"}
               </span>
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-xs text-slate-500">Domain</span>
+                <select
+                  value={activeDomain}
+                  onChange={(e) => handleDomainChange(e.target.value)}
+                  disabled={isStreaming || uploading}
+                  className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none transition-colors hover:border-slate-600 focus:border-sky-500 disabled:opacity-50"
+                  title="Document type — auto-detected on upload, override if wrong"
+                >
+                  {Object.entries(DOMAIN_LABELS).map(([id, label]) => (
+                    <option key={id} value={id}>{label}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             {uploadError ? (
               <p className="mt-2 block text-xs text-destructive">{uploadError}</p>
@@ -779,18 +858,7 @@ export default function App() {
               {provider === "ollama" ? (
                 <span className="text-[11px] text-amber-400/80">running locally, may be slower</span>
               ) : null}
-              <span className="text-xs text-slate-400">Domain</span>
-              <select
-                value={activeDomain}
-                onChange={(e) => handleDomainChange(e.target.value)}
-                disabled={isStreaming}
-                className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none transition-colors hover:border-slate-600 focus:border-sky-500 disabled:opacity-50"
-                title="Document domain — auto-detected on upload, can be overridden"
-              >
-                {Object.entries(DOMAIN_LABELS).map(([id, label]) => (
-                  <option key={id} value={id}>{label}</option>
-                ))}
-              </select>
+
               <div className="ml-auto flex items-center gap-2">
               {micSupported ? (
                 <Button

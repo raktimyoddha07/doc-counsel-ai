@@ -180,3 +180,18 @@ def retrieve_context(
         seen.add(key)
         parts.append(f"[Page {page}]\n{body}")
     return "\n\n".join(parts).strip()
+
+
+def delete_document_collection(
+    *,
+    persist_directory: str,
+    user_id: int,
+    document_id: Optional[int],
+    full_document_context: str,
+) -> None:
+    name = collection_name_for(user_id, document_id, full_document_context)
+    client = chromadb.PersistentClient(path=persist_directory)
+    try:
+        client.delete_collection(name)
+    except Exception:
+        pass

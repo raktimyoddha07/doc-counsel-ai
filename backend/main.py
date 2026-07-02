@@ -1377,6 +1377,61 @@ async def update_document_domain(
     return {"success": True, "domain": req.domain}
 
 
+@app.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: int,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+):
+    claims = require_user_claims(authorization)
+    user_id = int(claims["uid"])
+    if db_pool is None:
+        raise HTTPException(status_code=503, detail="Database not configured.")
+
+    # 1. Fetch document metadata to enforce ownership and get paths for cleanup
+    row = await db_pool.fetchrow(
+        "SELECT storage_path, full_document_context FROM documents WHERE id = $1 AND user_id = $2",
+        int(document_id),
+        int(user_id),
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    storage_path = row["storage_path"]
+    full_context = row["full_document_context"]
+
+    # 2. Delete from database (ON DELETE CASCADE deletes linked chat records in 'chats' and langchain history)
+    try:
+        await db_pool.execute(
+            "DELETE FROM documents WHERE id = $1 AND user_id = $2",
+            int(document_id),
+            int(user_id),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete document from database: {exc}")
+
+    # 3. Best-effort cleanup of stored PDF file on disk
+    if storage_path and os.path.exists(storage_path):
+        try:
+            os.remove(storage_path)
+        except Exception:
+            pass
+
+    # 4. Best-effort cleanup of Chroma vector collection
+    if chroma_rag_module is not None and USE_CHROMA:
+        try:
+            await asyncio.to_thread(
+                chroma_rag_module.delete_document_collection,
+                persist_directory=CHROMA_PERSIST_DIR,
+                user_id=user_id,
+                document_id=int(document_id),
+                full_document_context=full_context,
+            )
+        except Exception:
+            pass
+
+    return {"success": True}
+
+
 @app.post("/transcribe")
 async def transcribe(
     audio: UploadFile = File(...),
